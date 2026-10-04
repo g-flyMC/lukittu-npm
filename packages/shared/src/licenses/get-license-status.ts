@@ -1,0 +1,84 @@
+import { License } from '../../prisma/generated/client';
+
+export enum LicenseStatus {
+  ACTIVE = 'ACTIVE',
+  INACTIVE = 'INACTIVE',
+  EXPIRING = 'EXPIRING',
+  EXPIRED = 'EXPIRED',
+  SUSPENDED = 'SUSPENDED',
+  UPCOMING = 'UPCOMING',
+}
+
+export const getLicenseStatus = (
+  license: Omit<License, 'licenseKeyLookup'>,
+): LicenseStatus => {
+  const currentDate = new Date();
+
+  if (license.suspended) {
+    return LicenseStatus.SUSPENDED;
+  }
+
+  const lastActiveDate = new Date(license.lastActiveAt);
+
+  if (license.expirationType === 'NEVER') {
+    // Inactive if over 30 days since last activity
+    if (
+      currentDate.getTime() - lastActiveDate.getTime() >
+      30 * 24 * 60 * 60 * 1000
+    ) {
+      return LicenseStatus.INACTIVE;
+    }
+
+    return LicenseStatus.ACTIVE;
+  }
+
+  if (license.expirationType === 'DATE') {
+    if (currentDate.getTime() > new Date(license.expirationDate!).getTime()) {
+      return LicenseStatus.EXPIRED;
+    }
+
+    if (
+      currentDate.getTime() >
+      new Date(license.expirationDate!).getTime() - 30 * 24 * 60 * 60 * 1000
+    ) {
+      return LicenseStatus.EXPIRING;
+    }
+
+    if (
+      currentDate.getTime() - lastActiveDate.getTime() >
+      30 * 24 * 60 * 60 * 1000
+    ) {
+      return LicenseStatus.INACTIVE;
+    }
+
+    return LicenseStatus.ACTIVE;
+  }
+
+  const hasStartedExpiring = Boolean(license.expirationDate);
+
+  if (hasStartedExpiring) {
+    if (currentDate.getTime() > new Date(license.expirationDate!).getTime()) {
+      return LicenseStatus.EXPIRED;
+    }
+
+    if (
+      currentDate.getTime() >
+      new Date(license.expirationDate!).getTime() - 30 * 24 * 60 * 60 * 1000
+    ) {
+      return LicenseStatus.EXPIRING;
+    }
+  } else {
+    if (license.expirationStart === 'ACTIVATION') {
+      return LicenseStatus.UPCOMING;
+    }
+  }
+
+  if (
+    currentDate.getTime() - lastActiveDate.getTime() >
+    30 * 24 * 60 * 60 * 1000
+  ) {
+    return LicenseStatus.INACTIVE;
+  }
+
+  return LicenseStatus.ACTIVE;
+};

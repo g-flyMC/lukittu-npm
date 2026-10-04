@@ -1,0 +1,825 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+    provider = "prisma-client"
+    output   = "./generated"
+}
+
+datasource db {
+    provider = "postgresql"
+}
+
+model User {
+    id                            String                  @id @default(uuid())
+    email                         String                  @unique
+    emailVerified                 Boolean                 @default(false)
+    fullName                      String
+    passwordHash                  String?
+    imageUrl                      String?
+    createdAt                     DateTime                @default(now())
+    updatedAt                     DateTime                @updatedAt
+    provider                      Provider                @default(CREDENTIALS)
+    discordAccount                UserDiscordAccount?
+    sessions                      Session[]
+    createdProducts               Product[]
+    auditLogs                     AuditLog[]
+    ownedTeams                    Team[]                  @relation("TeamOwner")
+    teams                         Team[]                  @relation("TeamUsers")
+    createdApiKeys                ApiKey[]
+    createdLicenses               License[]
+    createdCustomers              Customer[]
+    createdStripeIntegrations     StripeIntegration[]
+    createdDiscordIntegrations    DiscordIntegration[]
+    createdBuiltByBitIntegrations BuiltByBitIntegration[]
+    createdPolymartIntegrations   PolymartIntegration[]
+    createdInvitations            Invitation[]
+    createdWebhookEvents          WebhookEvent[]
+    productDiscordRoles           ProductDiscordRole[]
+    blacklist                     Blacklist[]
+    releases                      Release[]
+    webhooks                      Webhook[]
+    totp                          UserTOTP?
+    recoveryCodes                 UserRecoveryCode[]
+}
+
+model UserTOTP {
+    id        String   @id @default(uuid())
+    userId    String   @unique
+    user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+    secret    String
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+}
+
+model UserRecoveryCode {
+    id        String    @id @default(uuid())
+    userId    String
+    user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+    code      String
+    used      Boolean   @default(false)
+    createdAt DateTime  @default(now())
+    usedAt    DateTime?
+}
+
+model UserDiscordAccount {
+    id             String   @id @default(uuid())
+    userId         String   @unique
+    user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+    discordId      String   @unique
+    username       String
+    globalName     String?
+    avatar         String?
+    refreshToken   String?
+    selectedTeamId String?
+    selectedTeam   Team?    @relation(fields: [selectedTeamId], references: [id], onDelete: SetNull)
+    createdAt      DateTime @default(now())
+    updatedAt      DateTime @updatedAt
+}
+
+model Session {
+    id        String   @id @default(uuid())
+    sessionId String   @unique
+    userId    String
+    user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+    ipAddress String?
+    userAgent String?
+    country   String?
+    expiresAt DateTime
+    createdAt DateTime @default(now())
+}
+
+model Team {
+    id                     String                   @id @default(uuid())
+    name                   String
+    ownerId                String
+    imageUrl               String?
+    owner                  User                     @relation("TeamOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+    users                  User[]                   @relation("TeamUsers")
+    products               Product[]
+    licenses               License[]
+    customers              Customer[]
+    requestLogs            RequestLog[]
+    auditLogs              AuditLog[]
+    invitations            Invitation[]
+    apiKeys                ApiKey[]
+    ipAddresses            IpAddress[]
+    hardwareIdentifiers    HardwareIdentifier[]
+    releases               Release[]
+    blacklist              Blacklist[]
+    metadata               Metadata[]
+    limits                 Limits?
+    stripeIntegration      StripeIntegration?
+    discordIntegration     DiscordIntegration?
+    builtByBitIntegration  BuiltByBitIntegration?
+    polymartIntegration    PolymartIntegration?
+    settings               Settings?
+    keyPair                KeyPair?
+    userDiscordAccounts    UserDiscordAccount[]
+    productDiscordRoles    ProductDiscordRole[]
+    customerDiscordAccount CustomerDiscordAccount[]
+    webhooks               Webhook[]
+    deletedAt              DateTime?
+    createdAt              DateTime                 @default(now())
+    updatedAt              DateTime                 @updatedAt
+    subscription           Subscription?
+}
+
+model Webhook {
+    id              String             @id @default(uuid())
+    teamId          String
+    team            Team               @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    name            String
+    url             String
+    secret          String
+    active          Boolean            @default(true)
+    enabledEvents   WebhookEventType[] @default([])
+    createdByUserId String?
+    createdBy       User?              @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+    events          WebhookEvent[]
+    createdAt       DateTime           @default(now())
+    updatedAt       DateTime           @updatedAt
+
+    @@index([teamId])
+}
+
+model WebhookEvent {
+    id            String             @id @default(uuid())
+    webhookId     String
+    webhook       Webhook            @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+    eventType     WebhookEventType
+    payload       Json
+    status        WebhookEventStatus @default(PENDING)
+    attempts      Int                @default(0)
+    lastAttemptAt DateTime?
+    nextRetryAt   DateTime?
+    errorMessage  String?
+    responseCode  Int?
+    responseBody  String?
+    completedAt   DateTime?
+    source        AuditLogSource     @default(DASHBOARD)
+    userId        String?
+    user          User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+    createdAt     DateTime           @default(now())
+    updatedAt     DateTime           @updatedAt
+
+    @@index([status, nextRetryAt])
+}
+
+enum WebhookEventStatus {
+    PENDING // Event created but not yet processed or sent to webhook endpoint
+    IN_PROGRESS // Event is currently being processed or sent
+    DELIVERED // Event was successfully delivered to webhook endpoint (received 2xx response)
+    FAILED // Event delivery failed permanently after all retries were exhausted
+    RETRY_SCHEDULED // Event delivery failed but is scheduled for retry
+}
+
+enum WebhookEventType {
+    LICENSE_CREATED
+    LICENSE_UPDATED
+    LICENSE_DELETED
+    CUSTOMER_CREATED
+    CUSTOMER_UPDATED
+    CUSTOMER_DELETED
+    PRODUCT_CREATED
+    PRODUCT_UPDATED
+    PRODUCT_DELETED
+    RELEASE_CREATED
+    RELEASE_UPDATED
+    RELEASE_DELETED
+}
+
+model Subscription {
+    id                   String    @id @default(uuid())
+    teamId               String    @unique
+    team                 Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    plan                 String
+    stripeSubscriptionId String    @unique
+    stripeCustomerId     String    @unique
+    status               String    @default("active")
+    canceledAt           DateTime?
+    billingPeriodEndsAt  DateTime?
+    createdAt            DateTime  @default(now())
+    updatedAt            DateTime  @updatedAt
+
+    @@index([teamId])
+}
+
+model StripeIntegration {
+    id              String   @id @default(uuid())
+    teamId          String   @unique
+    team            Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    webhookSecret   String
+    apiKey          String
+    active          Boolean  @default(true)
+    createdByUserId String?
+    createdBy       User?    @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+    createdAt       DateTime @default(now())
+    updatedAt       DateTime @updatedAt
+}
+
+model DiscordIntegration {
+    id              String   @id @default(uuid())
+    teamId          String   @unique
+    team            Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    active          Boolean  @default(true)
+    createdByUserId String?
+    createdBy       User?    @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+    createdAt       DateTime @default(now())
+    updatedAt       DateTime @updatedAt
+}
+
+model BuiltByBitIntegration {
+    id              String   @id @default(uuid())
+    teamId          String   @unique
+    team            Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    apiSecret       String
+    active          Boolean  @default(true)
+    createdByUserId String?
+    createdBy       User?    @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+    createdAt       DateTime @default(now())
+    updatedAt       DateTime @updatedAt
+}
+
+model PolymartIntegration {
+    id              String   @id @default(uuid())
+    teamId          String   @unique
+    team            Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    webhookSecret   String // Polymart webhook secret
+    signingSecret   String // Placeholder signing secret
+    active          Boolean  @default(true)
+    createdByUserId String?
+    createdBy       User?    @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+    createdAt       DateTime @default(now())
+    updatedAt       DateTime @updatedAt
+}
+
+model Blacklist {
+    id              String        @id @default(uuid())
+    type            BlacklistType
+    value           String
+    hits            Int           @default(0)
+    metadata        Metadata[]
+    updatedAt       DateTime      @updatedAt
+    createdAt       DateTime      @default(now())
+    teamId          String
+    createdByUserId String?
+    createdBy       User?         @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+    team            Team          @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+    @@unique([teamId, type, value])
+}
+
+model Limits {
+    id                    String   @id @default(uuid())
+    teamId                String   @unique
+    team                  Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    maxLicenses           Int      @default(100)
+    maxProducts           Int      @default(3)
+    logRetention          Int      @default(30)
+    maxCustomers          Int      @default(100)
+    maxTeamMembers        Int      @default(3)
+    maxBlacklist          Int      @default(100)
+    maxStorage            Int      @default(0) // in MB
+    maxApiKeys            Int      @default(10)
+    maxReleasesPerProduct Int      @default(100)
+    maxBranchesPerProduct Int      @default(10)
+    maxInvitations        Int      @default(10)
+    maxWebhooks           Int      @default(20)
+    allowClassloader      Boolean  @default(false)
+    allowCustomEmails     Boolean  @default(false)
+    updatedAt             DateTime @updatedAt
+    createdAt             DateTime @default(now())
+}
+
+model Settings {
+    id                          String          @id @default(uuid())
+    teamId                      String          @unique
+    team                        Team            @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    hwidTimeout                 Int?
+    ipTimeout                   Int?
+    strictCustomers             Boolean         @default(false)
+    strictProducts              Boolean         @default(false)
+    strictReleases              Boolean         @default(false)
+    emailMessage                String?
+    emailImageUrl               String?
+    expiredLicenseCleanupDays   Int?
+    danglingCustomerCleanupDays Int?
+    returnedFields              ReturnedFields?
+    createdAt                   DateTime        @default(now())
+    updatedAt                   DateTime        @updatedAt
+}
+
+model ReturnedFields {
+    id                     String   @id @default(uuid())
+    settingsId             String   @unique
+    settings               Settings @relation(fields: [settingsId], references: [id], onDelete: Cascade)
+    licenseIpLimit         Boolean  @default(false)
+    licenseHwidLimit       Boolean  @default(false)
+    licenseExpirationType  Boolean  @default(false)
+    licenseExpirationStart Boolean  @default(false)
+    licenseExpirationDate  Boolean  @default(false)
+    licenseExpirationDays  Boolean  @default(false)
+    licenseMetadataKeys    String[]
+    customerEmail          Boolean  @default(false)
+    customerFullName       Boolean  @default(false)
+    customerUsername       Boolean  @default(false)
+    customerMetadataKeys   String[]
+    productName            Boolean  @default(false)
+    productUrl             Boolean  @default(false)
+    productLatestRelease   Boolean  @default(false)
+    productMetadataKeys    String[]
+    updatedAt              DateTime @updatedAt
+    createdAt              DateTime @default(now())
+}
+
+model KeyPair {
+    id         String   @id @default(uuid())
+    publicKey  String
+    privateKey String
+    teamId     String   @unique
+    team       Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    createdAt  DateTime @default(now())
+}
+
+model ApiKey {
+    id              String    @id @default(uuid())
+    key             String    @unique
+    teamId          String
+    team            Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    createdByUserId String?
+    createdBy       User?     @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+    expiresAt       DateTime?
+    lastSeenAt      DateTime?
+    createdAt       DateTime  @default(now())
+
+    @@index([teamId])
+}
+
+model Invitation {
+    id              String   @id @default(uuid())
+    email           String
+    teamId          String
+    team            Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    accepted        Boolean  @default(false)
+    createdByUserId String?
+    createdBy       User?    @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+    createdAt       DateTime @default(now())
+}
+
+model Product {
+    id              String               @id @default(uuid())
+    name            String
+    url             String?
+    metadata        Metadata[]
+    teamId          String
+    team            Team                 @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    createdByUserId String?
+    createdBy       User?                @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+    licenses        License[]
+    releases        Release[]
+    branches        ReleaseBranch[]
+    requestLogs     RequestLog[]
+    discordRoles    ProductDiscordRole[]
+    createdAt       DateTime             @default(now())
+    updatedAt       DateTime             @updatedAt
+
+    @@index([teamId])
+}
+
+model ProductDiscordRole {
+    id              String   @id @default(uuid())
+    productId       String
+    product         Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+    roleId          String
+    roleName        String
+    roleColor       Int?
+    guildId         String
+    guildIcon       String?
+    guildName       String
+    teamId          String
+    team            Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    createdByUserId String?
+    createdBy       User?    @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+    createdAt       DateTime @default(now())
+    updatedAt       DateTime @updatedAt
+
+    @@unique([productId, roleId, guildId])
+    @@index([guildId])
+    @@index([teamId])
+}
+
+model ReleaseBranch {
+    id        String    @id @default(uuid())
+    name      String
+    productId String
+    product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+    releases  Release[]
+    createdAt DateTime  @default(now())
+    updatedAt DateTime  @updatedAt
+
+    @@unique([productId, name])
+}
+
+model Release {
+    id              String         @id @default(uuid())
+    version         String
+    metadata        Metadata[]
+    status          ReleaseStatus  @default(DRAFT)
+    latest          Boolean        @default(false)
+    branchId        String?
+    branch          ReleaseBranch? @relation(fields: [branchId], references: [id], onDelete: SetNull)
+    teamId          String
+    team            Team           @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    createdByUserId String?
+    createdBy       User?          @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+    createdAt       DateTime       @default(now())
+    updatedAt       DateTime       @updatedAt
+    lastSeenAt      DateTime?
+    product         Product        @relation(fields: [productId], references: [id], onDelete: Cascade)
+    productId       String
+    allowedLicenses License[]
+    file            ReleaseFile?
+    requestLogs     RequestLog[]
+
+    @@unique([productId, version, branchId])
+    @@index([teamId])
+}
+
+model ReleaseFile {
+    id            String       @id @default(uuid())
+    releaseId     String       @unique
+    release       Release      @relation(fields: [releaseId], references: [id], onDelete: Cascade)
+    key           String
+    size          Int
+    name          String
+    checksum      String
+    mainClassName String?
+    createdAt     DateTime     @default(now())
+    requestLogs   RequestLog[]
+}
+
+model Address {
+    id         String   @id @default(uuid())
+    city       String?
+    country    String?
+    line1      String?
+    line2      String?
+    postalCode String?
+    state      String?
+    customerId String   @unique
+    customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+}
+
+model Customer {
+    id              String                  @id @default(uuid())
+    username        String?
+    email           String?
+    fullName        String?
+    metadata        Metadata[]
+    teamId          String
+    team            Team                    @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    licenses        License[]
+    requestLogs     RequestLog[]
+    discordAccount  CustomerDiscordAccount?
+    createdByUserId String?
+    createdBy       User?                   @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+    createdAt       DateTime                @default(now())
+    updatedAt       DateTime                @updatedAt
+    address         Address?
+}
+
+model CustomerDiscordAccount {
+    id         String   @id @default(uuid())
+    customerId String   @unique
+    customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+    discordId  String
+    username   String
+    globalName String?
+    avatar     String?
+    teamId     String
+    team       Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    createdAt  DateTime @default(now())
+    updatedAt  DateTime @updatedAt
+
+    @@unique([teamId, discordId])
+}
+
+model Metadata {
+    id          String     @id @default(uuid())
+    key         String
+    value       String
+    locked      Boolean    @default(false)
+    teamId      String
+    team        Team       @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    createdAt   DateTime   @default(now())
+    updatedAt   DateTime   @updatedAt
+    //
+    customerId  String?
+    customer    Customer?  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+    //
+    licenseId   String?
+    license     License?   @relation(fields: [licenseId], references: [id], onDelete: Cascade)
+    //
+    productId   String?
+    product     Product?   @relation(fields: [productId], references: [id], onDelete: Cascade)
+    //
+    releaseId   String?
+    release     Release?   @relation(fields: [releaseId], references: [id], onDelete: Cascade)
+    //
+    blacklistId String?
+    blacklist   Blacklist? @relation(fields: [blacklistId], references: [id], onDelete: Cascade)
+
+    @@index([teamId])
+}
+
+model License {
+    id                  String                 @id @default(uuid())
+    licenseKey          String
+    licenseKeyLookup    String
+    ipLimit             Int?
+    hwidLimit           Int?
+    metadata            Metadata[]
+    expirationType      LicenseExpirationType  @default(NEVER)
+    expirationStart     LicenseExpirationStart @default(CREATION)
+    expirationDate      DateTime?
+    expirationDays      Int?
+    suspended           Boolean                @default(false)
+    teamId              String
+    team                Team                   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    products            Product[]
+    customers           Customer[]
+    allowedReleases     Release[]
+    createdByUserId     String?
+    createdBy           User?                  @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+    createdAt           DateTime               @default(now())
+    updatedAt           DateTime               @updatedAt
+    requestLogs         RequestLog[]
+    hardwareIdentifiers HardwareIdentifier[]
+    ipAddresses         IpAddress[]
+    lastActiveAt        DateTime               @default(now())
+
+    @@unique([teamId, licenseKeyLookup])
+}
+
+model IpAddress {
+    id          String    @id @default(uuid())
+    ip          String
+    forgotten   Boolean   @default(false)
+    forgottenAt DateTime?
+    lastSeenAt  DateTime  @default(now())
+    country     String?
+    licenseId   String
+    license     License   @relation(fields: [licenseId], references: [id], onDelete: Cascade)
+    teamId      String
+    team        Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    createdAt   DateTime  @default(now())
+    updatedAt   DateTime  @updatedAt
+
+    @@unique([licenseId, ip])
+    @@index([teamId])
+}
+
+model HardwareIdentifier {
+    id          String    @id @default(uuid())
+    hwid        String
+    forgotten   Boolean   @default(false)
+    forgottenAt DateTime?
+    licenseId   String
+    license     License   @relation(fields: [licenseId], references: [id], onDelete: Cascade)
+    teamId      String
+    team        Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    lastSeenAt  DateTime  @default(now())
+    createdAt   DateTime  @default(now())
+    updatedAt   DateTime  @updatedAt
+
+    @@unique([licenseId, hwid])
+    @@index([teamId])
+}
+
+model AuditLog {
+    id           String             @id @default(uuid())
+    ipAddress    String?
+    longitude    Float?
+    latitude     Float?
+    userAgent    String?
+    country      String?
+    requestBody  Json?
+    responseBody Json?
+    version      String
+    userId       String?
+    user         User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+    targetId     String
+    targetType   AuditLogTargetType
+    teamId       String
+    team         Team               @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    action       AuditLogAction
+    source       AuditLogSource
+    createdAt    DateTime           @default(now())
+
+    @@index([teamId, createdAt])
+}
+
+model RequestLog {
+    id                 String        @id @default(uuid())
+    responseTime       Int
+    ipAddress          String?
+    longitude          Float?
+    latitude           Float?
+    country            String?
+    status             RequestStatus
+    type               RequestType   @default(UNKNOWN)
+    statusCode         Int
+    version            String
+    userAgent          String?
+    hardwareIdentifier String?
+    path               String
+    method             RequestMethod
+    requestBody        Json?
+    responseBody       Json?
+    requestQuery       Json?
+    teamId             String
+    team               Team          @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    licenseId          String?
+    license            License?      @relation(fields: [licenseId], references: [id], onDelete: SetNull)
+    productId          String?
+    product            Product?      @relation(fields: [productId], references: [id], onDelete: SetNull)
+    releaseId          String?
+    release            Release?      @relation(fields: [releaseId], references: [id], onDelete: SetNull)
+    releaseFileId      String?
+    releaseFile        ReleaseFile?  @relation(fields: [releaseFileId], references: [id], onDelete: SetNull)
+    customerId         String?
+    customer           Customer?     @relation(fields: [customerId], references: [id], onDelete: SetNull)
+    createdAt          DateTime      @default(now())
+
+    // TODO: Prisma does not support partial indexes so these are created manually:
+    //
+    //     -- CreateIndex
+    // CREATE INDEX "RequestLog_productId_idx" ON "public"."RequestLog"("productId") WHERE "productId" IS NOT NULL;
+
+    // -- CreateIndex
+    // CREATE INDEX "RequestLog_releaseId_idx" ON "public"."RequestLog"("releaseId") WHERE "releaseId" IS NOT NULL;
+
+    // -- CreateIndex
+    // CREATE INDEX "RequestLog_releaseFileId_idx" ON "public"."RequestLog"("releaseFileId") WHERE "releaseFileId" IS NOT NULL;
+
+    // -- CreateIndex
+    // CREATE INDEX "RequestLog_licenseId_idx" ON "public"."RequestLog"("licenseId") WHERE "licenseId" IS NOT NULL;
+
+    // -- CreateIndex
+    // CREATE INDEX "RequestLog_customerId_idx" ON "public"."RequestLog"("customerId") WHERE "customerId" IS NOT NULL;
+
+    // CREATE INDEX CONCURRENTLY "RequestLog_teamId_createdAt_stats_idx"
+    //   ON "public"."RequestLog" ("teamId", "createdAt")
+    //   INCLUDE ("status", "type", "country", "licenseId");
+}
+
+enum RequestType {
+    UNKNOWN
+    HEARTBEAT
+    VERIFY
+    DOWNLOAD
+}
+
+enum RequestMethod {
+    GET
+    POST
+    PUT
+    PATCH
+    DELETE
+}
+
+enum AuditLogSource {
+    DASHBOARD /// Logged-in user via the dashboard
+    API_KEY /// Through developer API using API key
+    STRIPE_INTEGRATION
+    DISCORD_INTEGRATION
+    BUILT_BY_BIT_INTEGRATION
+    POLYMART_INTEGRATION
+}
+
+enum AuditLogAction {
+    LEAVE_TEAM
+    CREATE_TEAM
+    UPDATE_TEAM
+    DELETE_TEAM
+    TRANSFER_TEAM_OWNERSHIP
+    CREATE_LICENSE
+    UPDATE_LICENSE
+    DELETE_LICENSE
+    CREATE_CUSTOMER
+    UPDATE_CUSTOMER
+    DELETE_CUSTOMER
+    CREATE_PRODUCT
+    UPDATE_PRODUCT
+    DELETE_PRODUCT
+    INVITE_MEMBER
+    KICK_MEMBER
+    CANCEL_INVITATION
+    ACCEPT_INVITATION
+    RESET_PUBLIC_KEY
+    UPDATE_TEAM_SETTINGS
+    UPDATE_TEAM_PICTURE
+    DELETE_TEAM_PICTURE
+    CREATE_BLACKLIST
+    DELETE_BLACKLIST
+    UPDATE_BLACKLIST
+    CREATE_API_KEY
+    DELETE_API_KEY
+    SET_STRIPE_INTEGRATION
+    DELETE_STRIPE_INTEGRATION
+    SET_DISCORD_INTEGRATION
+    DELETE_DISCORD_INTEGRATION
+    CREATE_RELEASE
+    UPDATE_RELEASE
+    DELETE_RELEASE
+    SET_LATEST_RELEASE
+    UPDATE_EMAIL_PICTURE
+    DELETE_EMAIL_PICTURE
+    SET_BUILT_BY_BIT_INTEGRATION
+    DELETE_BUILT_BY_BIT_INTEGRATION
+    SET_POLYMART_INTEGRATION
+    DELETE_POLYMART_INTEGRATION
+    CREATE_BRANCH
+    UPDATE_BRANCH
+    DELETE_BRANCH
+    SET_BUILT_BY_BIT_PLACEHOLDER
+    SET_POLYMART_PLACEHOLDER
+    CREATE_WEBHOOK
+    UPDATE_WEBHOOK
+    DELETE_WEBHOOK
+    FORGET_HWID
+    REMEMBER_HWID
+    FORGET_IP
+    REMEMBER_IP
+}
+
+enum ReleaseStatus {
+    PUBLISHED
+    DRAFT
+    DEPRECATED
+    ARCHIVED
+}
+
+enum AuditLogTargetType {
+    LICENSE
+    CUSTOMER
+    PRODUCT
+    TEAM
+    BLACKLIST
+    RELEASE
+    BRANCH
+    WEBHOOK
+    HARDWARE_IDENTIFIER
+    IP_ADDRESS
+}
+
+enum BlacklistType {
+    HARDWARE_IDENTIFIER
+    IP_ADDRESS
+    COUNTRY
+}
+
+enum Provider {
+    CREDENTIALS
+    GOOGLE
+    GITHUB
+}
+
+enum LicenseExpirationType {
+    NEVER
+    DATE
+    DURATION
+}
+
+enum LicenseExpirationStart {
+    ACTIVATION
+    CREATION
+}
+
+enum RequestStatus {
+    INTERNAL_SERVER_ERROR
+    BAD_REQUEST
+    LICENSE_NOT_FOUND
+    VALID
+    IP_LIMIT_REACHED
+    HWID_LIMIT_REACHED
+    PRODUCT_NOT_FOUND
+    CUSTOMER_NOT_FOUND
+    LICENSE_EXPIRED
+    LICENSE_SUSPENDED
+    TEAM_NOT_FOUND
+    RATE_LIMIT
+    HARDWARE_IDENTIFIER_BLACKLISTED
+    COUNTRY_BLACKLISTED
+    IP_BLACKLISTED
+    RELEASE_NOT_FOUND
+    INVALID_SESSION_KEY
+    NO_ACCESS_TO_RELEASE
+    RELEASE_ARCHIVED
+    RELEASE_DRAFT
+    FORBIDDEN
+}

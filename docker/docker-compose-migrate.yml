@@ -1,0 +1,12 @@
+services:
+  prisma:
+    image: kassq/lukittu-migrate:${IMAGE_TAG:-latest}
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    networks:
+      - lukittu-network
+
+networks:
+  lukittu-network:
+    external: true

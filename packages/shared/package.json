@@ -1,0 +1,51 @@
+{
+  "name": "@lukittu/shared",
+  "version": "1.0.0",
+  "main": "dist/src/index.js",
+  "exports": {
+    ".": {
+      "edge-light": "./dist/src/client.js",
+      "browser": "./dist/src/client.js",
+      "node": "./dist/src/index.js",
+      "default": "./dist/src/index.js"
+    },
+    "./client": "./dist/src/client.js",
+    "./server": "./dist/src/server.js"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "generate": "prisma generate",
+    "migrate": "prisma migrate dev",
+    "deploy": "prisma migrate deploy",
+    "build": "npm run generate && tsc && cp -r prisma dist/",
+    "test": "jest --passWithNoTests",
+    "test:watch": "jest --watch",
+    "format": "prettier --write ."
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.9.1",
+    "@prisma/client": "^7.9.1",
+    "dotenv": "^17.2.3",
+    "ioredis": "^6.0.0",
+    "otpauth": "^9.5.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.10.1",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.6",
+    "jest": "^30.4.2",
+    "jest-mock-extended": "^4.0.1",
+    "prisma": "^7.9.1",
+    "ts-jest": "^29.4.12",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.67.0"
+  },
+  "browser": {
+    "./server": false,
+    "./dist/src/server.js": false
+  }
+}
