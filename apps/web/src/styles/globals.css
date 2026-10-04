@@ -1,0 +1,94 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 221 41% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 221 41% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 221 41% 12%;
+    --primary: 230 46% 47%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 217 21% 27%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 230 46% 47%;
+    --radius: 0.5rem;
+    --chart-1: 230 46% 47%;
+    --chart-2: 123 38% 57%;
+    --chart-3: 197 37% 24%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 0 65% 51%;
+  }
+
+  .dark {
+    --background: 230 24% 5%;
+    --foreground: 230 5% 90%;
+    --card: 230 24% 5%;
+    --card-foreground: 230 5% 90%;
+    --popover: 230 24% 5%;
+    --popover-foreground: 230 5% 90%;
+    --primary: 230 45.8% 47.1%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 230 24% 10%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 230 24% 10%;
+    --muted-foreground: 230 5% 60%;
+    --accent: 230 24% 10%;
+    --accent-foreground: 230 5% 90%;
+    --destructive: 0 65% 40%;
+    --destructive-foreground: 230 5% 90%;
+    --border: 230 24% 18%;
+    --input: 230 24% 18%;
+    --ring: 230 45.8% 47.1%;
+    --radius: 0.5rem;
+    --chart-1: 230 46% 47%;
+    --chart-2: 123 38% 57%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 0 65% 51%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+@layer utilities {
+  .popover-content-width-full {
+    width: var(--radix-popover-trigger-width);
+    max-height: var(--radix-popover-content-available-height);
+  }
+}
+
+/* CUSTOM SCROLLBAR STYLING MATCHING SCROLL-AREA */
+::-webkit-scrollbar {
+  @apply h-2 w-2;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply rounded-full border-[1px] border-solid border-transparent bg-border;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+::-webkit-scrollbar-corner {
+  @apply bg-background;
+}
