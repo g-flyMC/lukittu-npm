@@ -1,0 +1,30 @@
+{
+  "name": "lukittu",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KasperiP/lukittu.git"
+  },
+  "private": true,
+  "scripts": {
+    "dev": "npm run generate --workspace=@lukittu/shared && npm run dev --workspaces --if-present",
+    "format": "prettier --write .",
+    "db:migrate": "npm run migrate --workspace=@lukittu/shared",
+    "db:deploy": "npm run deploy --workspace=@lukittu/shared",
+    "db:generate": "npm run generate --workspace=@lukittu/shared",
+    "build:shared": "npm run build --workspace=@lukittu/shared",
+    "build:web": "npm run build --workspace=lukittu-web",
+    "build:bot": "npm run build --workspace=lukittu-bot",
+    "build": "npm run build:shared && npm run build:web && npm run build:bot"
+  },
+  "devDependencies": {
+    "prettier": "^3.9.6"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  }
+}
