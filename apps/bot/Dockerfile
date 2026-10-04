@@ -1,0 +1,81 @@
+FROM node:24-alpine AS base
+
+# 1. Install dependencies only when needed
+FROM base AS deps
+# Check https://github.com/nodejs/docker-node/tree/b4117f9333da4138b03a546ec926ef50a31506c3#nodealpine to understand why libc6-compat might be needed.
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
+
+# Copy workspace configuration
+COPY package.json ./
+
+# Copy all package.json files from workspace packages
+COPY apps/bot/package.json ./apps/bot/
+COPY apps/web/package.json ./apps/web/
+COPY packages/shared/package.json ./packages/shared/
+
+# Install dependencies
+COPY package-lock.json ./
+RUN --mount=type=cache,id=npm,target=/root/.npm npm ci
+
+# 2. Rebuild the source code only when needed
+FROM base AS builder
+WORKDIR /app
+
+# Build arguments for Sentry configuration
+ARG SENTRY_DSN_BOT
+ARG SENTRY_RELEASE
+ARG SENTRY_ORG
+ARG SENTRY_PROJECT
+
+# Set environment variables for the build
+ENV SENTRY_DSN_BOT=$SENTRY_DSN_BOT \
+    SENTRY_RELEASE=$SENTRY_RELEASE \
+    SENTRY_ORG=$SENTRY_ORG \
+    SENTRY_PROJECT=$SENTRY_PROJECT
+
+
+# Copy all workspace files
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/apps/bot/node_modules ./apps/bot/node_modules
+COPY --from=deps /app/package.json ./
+
+# Copy source code
+COPY packages ./packages
+COPY apps ./apps
+
+# Set working directory to the bot app
+WORKDIR /app/apps/bot
+
+# Generate Prisma client
+RUN cd ../../packages/shared && npm run build
+
+# Build the bot with Sentry auth token from secret
+RUN --mount=type=secret,id=sentry_auth_token \
+    export SENTRY_AUTH_TOKEN=$(cat /run/secrets/sentry_auth_token 2>/dev/null || echo "") && \
+    npm run build
+
+# 3. Production image
+FROM base AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 botuser
+
+
+# Copy the built application
+COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
+COPY --from=builder /app/packages/shared/package.json ./packages/shared/package.json
+COPY --from=builder /app/packages/shared/prisma ./packages/shared/prisma
+COPY --from=builder /app/apps/bot/dist ./apps/bot/dist
+COPY --from=builder /app/apps/bot/package.json ./apps/bot/package.json
+COPY --from=builder /app/apps/bot/node_modules ./apps/bot/node_modules
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./
+
+USER botuser
+WORKDIR /app/apps/bot
+
+CMD ["node", "--import", "./dist/instrument.js", "dist/index.js"]
