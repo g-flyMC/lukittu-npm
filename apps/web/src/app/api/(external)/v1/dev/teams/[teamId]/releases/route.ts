@@ -1,0 +1,951 @@
+import { MAX_RELEASE_FILE_SIZE } from '@/lib/constants/limits';
+import { createAuditLog } from '@/lib/logging/audit-log';
+import { uploadFileToPrivateS3 } from '@/lib/providers/aws-s3';
+import { verifyApiAuthorization } from '@/lib/security/api-key-auth';
+import { isRateLimited } from '@/lib/security/rate-limiter';
+import { getIp } from '@/lib/utils/header-helpers';
+import { getMainClassFromJar } from '@/lib/utils/java-helpers';
+import { bytesToMb, bytesToSize } from '@/lib/utils/number-helpers';
+import {
+  CreateReleaseSchema,
+  createReleaseSchema,
+} from '@/lib/validation/releases/create-release-schema';
+import { IExternalDevResponse } from '@/types/common-api-types';
+import { HttpStatus } from '@/types/http-status';
+import {
+  attemptWebhookDelivery,
+  AuditLogAction,
+  AuditLogSource,
+  AuditLogTargetType,
+  createReleasePayload,
+  createWebhookEvents,
+  decryptString,
+  generateMD5Hash,
+  logger,
+  Prisma,
+  prisma,
+  regex,
+  ReleaseStatus,
+  WebhookEventType,
+} from '@lukittu/shared';
+import crypto from 'crypto';
+import { headers } from 'next/headers';
+import { after, NextRequest, NextResponse } from 'next/server';
+
+export async function POST(
+  request: NextRequest,
+  props: { params: Promise<{ teamId: string }> },
+): Promise<NextResponse<IExternalDevResponse>> {
+  const params = await props.params;
+  const { teamId } = params;
+  const requestTime = new Date();
+  const requestId = crypto.randomUUID();
+  const headersList = await headers();
+  const userAgent = headersList.get('user-agent') || 'unknown';
+  const ipAddress = await getIp();
+
+  try {
+    logger.info('Dev API: Create release request started', {
+      requestId,
+      teamId,
+      route: '/v1/dev/teams/[teamId]/releases',
+      method: 'POST',
+      userAgent,
+      timestamp: requestTime.toISOString(),
+      ipAddress,
+    });
+
+    if (!teamId || !regex.uuidV4.test(teamId)) {
+      const responseTime = Date.now() - requestTime.getTime();
+
+      logger.warn('Dev API: Invalid teamId provided for release creation', {
+        requestId,
+        providedTeamId: teamId,
+        responseTimeMs: responseTime,
+        statusCode: HttpStatus.BAD_REQUEST,
+        ipAddress,
+        userAgent,
+      });
+
+      return NextResponse.json(
+        {
+          data: null,
+          result: {
+            details: 'Invalid teamId',
+            timestamp: new Date(),
+            valid: false,
+          },
+        },
+        { status: HttpStatus.BAD_REQUEST },
+      );
+    }
+
+    const { team } = await verifyApiAuthorization(teamId);
+
+    if (!team) {
+      const responseTime = Date.now() - requestTime.getTime();
+
+      logger.warn('Dev API: API key authentication failed', {
+        requestId,
+        teamId,
+        responseTimeMs: responseTime,
+        statusCode: HttpStatus.UNAUTHORIZED,
+        ipAddress,
+        userAgent,
+      });
+
+      return NextResponse.json(
+        {
+          data: null,
+          result: {
+            details: 'Invalid API key',
+            timestamp: new Date(),
+            valid: false,
+          },
+        },
+        { status: HttpStatus.UNAUTHORIZED },
+      );
+    }
+
+    if (ipAddress) {
+      const key = `dev-releases-create:${ipAddress}`;
+      const isLimited = await isRateLimited(key, 40, 300); // 40 requests per 5 minutes
+
+      if (isLimited) {
+        const responseTime = Date.now() - requestTime.getTime();
+
+        logger.warn('Dev API: Rate limit exceeded for release creation', {
+          requestId,
+          teamId,
+          responseTimeMs: responseTime,
+          statusCode: HttpStatus.TOO_MANY_REQUESTS,
+          ipAddress,
+          userAgent,
+        });
+
+        return NextResponse.json(
+          {
+            data: null,
+            result: {
+              details: 'Too many requests',
+              timestamp: new Date(),
+              valid: false,
+            },
+          },
+          { status: HttpStatus.TOO_MANY_REQUESTS },
+        );
+      }
+    }
+
+    const formData = await request.formData();
+    const fileEntry = formData.get('file');
+    const dataEntry = formData.get('data');
+
+    if (typeof dataEntry !== 'string') {
+      const responseTime = Date.now() - requestTime.getTime();
+
+      logger.warn('Dev API: Missing data field in release creation', {
+        requestId,
+        teamId,
+        responseTimeMs: responseTime,
+        statusCode: HttpStatus.BAD_REQUEST,
+        ipAddress,
+        userAgent,
+      });
+
+      return NextResponse.json(
+        {
+          data: null,
+          result: {
+            details: 'Missing data field',
+            timestamp: new Date(),
+            valid: false,
+          },
+        },
+        { status: HttpStatus.BAD_REQUEST },
+      );
+    }
+
+    if (fileEntry !== null && !(fileEntry instanceof File)) {
+      return NextResponse.json(
+        {
+          data: null,
+          result: {
+            details: 'Invalid file',
+            timestamp: new Date(),
+            valid: false,
+          },
+        },
+        { status: HttpStatus.BAD_REQUEST },
+      );
+    }
+
+    const file = fileEntry;
+
+    let body: CreateReleaseSchema;
+    try {
+      body = JSON.parse(dataEntry) as CreateReleaseSchema;
+    } catch {
+      const responseTime = Date.now() - requestTime.getTime();
+
+      logger.warn('Dev API: Invalid JSON in data field', {
+        requestId,
+        teamId,
+        responseTimeMs: responseTime,
+        statusCode: HttpStatus.BAD_REQUEST,
+        ipAddress,
+        userAgent,
+      });
+
+      return NextResponse.json(
+        {
+          data: null,
+          result: {
+            details: 'Invalid JSON in data field',
+            timestamp: new Date(),
+            valid: false,
+          },
+        },
+        { status: HttpStatus.BAD_REQUEST },
+      );
+    }
+
+    const validated = await createReleaseSchema().safeParseAsync(body);
+
+    if (!validated.success) {
+      const responseTime = Date.now() - requestTime.getTime();
+
+      logger.warn('Dev API: Release creation validation failed', {
+        requestId,
+        teamId,
+        validationErrors: validated.error.errors.map((err) => ({
+          field: err.path.join('.'),
+          message: err.message,
+          code: err.code,
+        })),
+        responseTimeMs: responseTime,
+        statusCode: HttpStatus.BAD_REQUEST,
+        ipAddress,
+        userAgent,
+      });
+
+      return NextResponse.json(
+        {
+          data: validated.error.errors.map((error) => ({
+            message: error.message,
+            path: error.path,
+          })),
+          result: {
+            details: 'Invalid request body',
+            timestamp: new Date(),
+            valid: false,
+          },
+        },
+        { status: HttpStatus.BAD_REQUEST },
+      );
+    }
+
+    const {
+      metadata,
+      productId,
+      status,
+      version,
+      setAsLatest,
+      licenseIds,
+      branchId,
+    } = validated.data;
+
+    if (file && file.size > MAX_RELEASE_FILE_SIZE) {
+      return NextResponse.json(
+        {
+          data: null,
+          result: {
+            details: `File too large. Maximum size is ${bytesToSize(MAX_RELEASE_FILE_SIZE)}`,
+            timestamp: new Date(),
+            valid: false,
+          },
+        },
+        { status: HttpStatus.BAD_REQUEST },
+      );
+    }
+
+    if (file && !team.limits.allowClassloader) {
+      return NextResponse.json(
+        {
+          data: null,
+          result: {
+            details: 'File uploads require a paid subscription',
+            timestamp: new Date(),
+            valid: false,
+          },
+        },
+        { status: HttpStatus.BAD_REQUEST },
+      );
+    }
+
+    // Validate product exists and belongs to team
+    const product = await prisma.product.findFirst({
+      where: {
+        id: productId,
+        teamId: team.id,
+      },
+      include: {
+        branches: branchId
+          ? {
+              where: {
+                id: branchId,
+              },
+            }
+          : undefined,
+      },
+    });
+
+    if (!product) {
+      return NextResponse.json(
+        {
+          data: null,
+          result: {
+            details: 'Product not found',
+            timestamp: new Date(),
+            valid: false,
+          },
+        },
+        { status: HttpStatus.NOT_FOUND },
+      );
+    }
+
+    // Check release count limit
+    const releaseCount = await prisma.release.count({
+      where: {
+        productId,
+        teamId: team.id,
+      },
+    });
+
+    if (releaseCount >= team.limits.maxReleasesPerProduct) {
+      return NextResponse.json(
+        {
+          data: null,
+          result: {
+            details: 'Max releases per product reached',
+            timestamp: new Date(),
+            valid: false,
+          },
+        },
+        { status: HttpStatus.FORBIDDEN },
+      );
+    }
+
+    // Validate license IDs
+    if (licenseIds.length) {
+      const licenses = await prisma.license.findMany({
+        where: {
+          id: {
+            in: licenseIds,
+          },
+          teamId: team.id,
+        },
+      });
+
+      if (licenses.length !== licenseIds.length) {
+        return NextResponse.json(
+          {
+            data: null,
+            result: {
+              details: 'One or more license IDs not found',
+              timestamp: new Date(),
+              valid: false,
+            },
+          },
+          { status: HttpStatus.NOT_FOUND },
+        );
+      }
+
+      if (setAsLatest) {
+        return NextResponse.json(
+          {
+            data: null,
+            result: {
+              details:
+                'Cannot set as latest release when license IDs are provided',
+              timestamp: new Date(),
+              valid: false,
+            },
+          },
+          { status: HttpStatus.BAD_REQUEST },
+        );
+      }
+    }
+
+    // Validate branch
+    if (branchId) {
+      const branch = product.branches?.find((b) => b.id === branchId);
+
+      if (!branch) {
+        return NextResponse.json(
+          {
+            data: null,
+            result: {
+              details: 'Branch not found',
+              timestamp: new Date(),
+              valid: false,
+            },
+          },
+          { status: HttpStatus.NOT_FOUND },
+        );
+      }
+    }
+
+    // Check version uniqueness per product+branch
+    const existingRelease = await prisma.release.findFirst({
+      where: {
+        version,
+        productId,
+        branchId,
+        teamId: team.id,
+      },
+    });
+
+    if (existingRelease) {
+      return NextResponse.json(
+        {
+          data: null,
+          result: {
+            details:
+              'A release with this version already exists for this product and branch',
+            timestamp: new Date(),
+            valid: false,
+          },
+        },
+        { status: HttpStatus.CONFLICT },
+      );
+    }
+
+    // File processing
+    let fileKey: string | null = null;
+    let checksum: string | null = null;
+    let mainClassName: string | null = null;
+
+    if (file) {
+      // Storage limit check
+      const teamReleases = await prisma.release.findMany({
+        where: {
+          teamId: team.id,
+        },
+        include: {
+          file: true,
+        },
+      });
+
+      const totalStorageUsed = teamReleases.reduce(
+        (acc, release) => acc + (release.file?.size || 0),
+        0,
+      );
+
+      const maxStorage = team.limits.maxStorage || 0; // In MB
+      const totalStorageUsedMb = bytesToMb(totalStorageUsed);
+      const uploadedReleaseSizeMb = bytesToMb(file.size);
+
+      if (totalStorageUsedMb + uploadedReleaseSizeMb > maxStorage) {
+        return NextResponse.json(
+          {
+            data: null,
+            result: {
+              details: 'Storage limit reached',
+              timestamp: new Date(),
+              valid: false,
+            },
+          },
+          { status: HttpStatus.BAD_REQUEST },
+        );
+      }
+
+      const generatedChecksum = await generateMD5Hash(file);
+
+      if (!generatedChecksum) {
+        return NextResponse.json(
+          {
+            data: null,
+            result: {
+              details: 'Failed to generate file checksum',
+              timestamp: new Date(),
+              valid: false,
+            },
+          },
+          { status: HttpStatus.INTERNAL_SERVER_ERROR },
+        );
+      }
+
+      checksum = generatedChecksum;
+
+      const fileExtension = file.name.split('.').pop();
+
+      if (!fileExtension || !fileExtension.length) {
+        return NextResponse.json(
+          {
+            data: null,
+            result: {
+              details: 'File must have an extension',
+              timestamp: new Date(),
+              valid: false,
+            },
+          },
+          { status: HttpStatus.BAD_REQUEST },
+        );
+      }
+
+      if (fileExtension === 'jar') {
+        mainClassName = await getMainClassFromJar(file);
+      }
+
+      fileKey = `releases/${team.id}/${productId}-${version}.${fileExtension}`;
+      const fileStream = file.stream();
+      await uploadFileToPrivateS3(
+        process.env.PRIVATE_OBJECT_STORAGE_BUCKET_NAME!,
+        fileKey,
+        fileStream,
+        file.type,
+      );
+    }
+
+    let webhookEventIds: string[] = [];
+
+    const response = await prisma.$transaction(async (prisma) => {
+      const isPublished = status === 'PUBLISHED';
+
+      if (isPublished && setAsLatest) {
+        await prisma.release.updateMany({
+          where: {
+            productId,
+            branchId,
+          },
+          data: {
+            latest: false,
+          },
+        });
+      }
+
+      const release = await prisma.release.create({
+        data: {
+          metadata: {
+            createMany: {
+              data: metadata.map((m) => ({
+                ...m,
+                teamId: team.id,
+              })),
+            },
+          },
+          productId,
+          status,
+          version,
+          teamId: team.id,
+          latest: Boolean(setAsLatest && isPublished),
+          branchId,
+          allowedLicenses: licenseIds.length
+            ? {
+                connect: licenseIds.map((id) => ({
+                  id,
+                })),
+              }
+            : undefined,
+          file: file
+            ? {
+                create: {
+                  key: fileKey!,
+                  size: file.size,
+                  checksum: checksum!,
+                  name: file.name,
+                  mainClassName,
+                },
+              }
+            : undefined,
+        },
+        include: {
+          metadata: true,
+          product: true,
+          file: true,
+          branch: true,
+        },
+      });
+
+      const responseData: IExternalDevResponse = {
+        data: {
+          id: release.id,
+          version: release.version,
+          status: release.status,
+          latest: release.latest,
+          productId: release.productId,
+          branchId: release.branchId,
+          teamId: release.teamId,
+          createdAt: release.createdAt,
+          updatedAt: release.updatedAt,
+          metadata: release.metadata,
+          product: release.product,
+          branch: release.branch,
+          file: release.file,
+        },
+        result: {
+          details: 'Release created',
+          timestamp: new Date(),
+          valid: true,
+        },
+      };
+
+      await createAuditLog({
+        teamId: team.id,
+        action: AuditLogAction.CREATE_RELEASE,
+        targetId: release.id,
+        targetType: AuditLogTargetType.RELEASE,
+        responseBody: responseData,
+        requestBody: body,
+        source: AuditLogSource.API_KEY,
+        tx: prisma,
+      });
+
+      webhookEventIds = await createWebhookEvents({
+        eventType: WebhookEventType.RELEASE_CREATED,
+        teamId: team.id,
+        payload: createReleasePayload(release),
+        source: AuditLogSource.API_KEY,
+        tx: prisma,
+      });
+
+      return responseData;
+    });
+
+    after(async () => {
+      await attemptWebhookDelivery(webhookEventIds);
+    });
+
+    const responseTime = Date.now() - requestTime.getTime();
+
+    logger.info('Dev API: Release created successfully', {
+      requestId,
+      teamId,
+      releaseId: response.data.id,
+      responseTimeMs: responseTime,
+      statusCode: HttpStatus.CREATED,
+    });
+
+    return NextResponse.json(response, { status: HttpStatus.CREATED });
+  } catch (error) {
+    const responseTime = Date.now() - requestTime.getTime();
+
+    logger.error('Dev API: Create release failed', {
+      requestId,
+      teamId,
+      route: '/v1/dev/teams/[teamId]/releases',
+      error: error instanceof Error ? error.message : String(error),
+      errorType: error?.constructor?.name || 'Unknown',
+      responseTimeMs: responseTime,
+      ipAddress,
+      userAgent,
+    });
+
+    return NextResponse.json(
+      {
+        data: null,
+        result: {
+          details: 'Internal server error',
+          timestamp: new Date(),
+          valid: false,
+        },
+      },
+      { status: HttpStatus.INTERNAL_SERVER_ERROR },
+    );
+  }
+}
+
+export async function GET(
+  request: NextRequest,
+  props: { params: Promise<{ teamId: string }> },
+): Promise<NextResponse<IExternalDevResponse>> {
+  const params = await props.params;
+  const { teamId } = params;
+  const requestTime = new Date();
+  const requestId = crypto.randomUUID();
+  const headersList = await headers();
+  const userAgent = headersList.get('user-agent') || 'unknown';
+  const ipAddress = await getIp();
+
+  try {
+    logger.info('Dev API: Get releases request started', {
+      requestId,
+      teamId,
+      route: '/v1/dev/teams/[teamId]/releases',
+      method: 'GET',
+      userAgent,
+      timestamp: requestTime.toISOString(),
+      ipAddress,
+    });
+
+    if (!teamId || !regex.uuidV4.test(teamId)) {
+      const responseTime = Date.now() - requestTime.getTime();
+
+      logger.warn('Dev API: Invalid teamId provided for release listing', {
+        requestId,
+        providedTeamId: teamId,
+        responseTimeMs: responseTime,
+        statusCode: HttpStatus.BAD_REQUEST,
+        ipAddress,
+        userAgent,
+      });
+
+      return NextResponse.json(
+        {
+          data: null,
+          result: {
+            details: 'Invalid teamId',
+            timestamp: new Date(),
+            valid: false,
+          },
+        },
+        { status: HttpStatus.BAD_REQUEST },
+      );
+    }
+
+    const { team } = await verifyApiAuthorization(teamId);
+
+    if (!team) {
+      const responseTime = Date.now() - requestTime.getTime();
+
+      logger.warn(
+        'Dev API: API key authentication failed for release listing',
+        {
+          requestId,
+          teamId,
+          responseTimeMs: responseTime,
+          statusCode: HttpStatus.UNAUTHORIZED,
+          ipAddress,
+          userAgent,
+        },
+      );
+
+      return NextResponse.json(
+        {
+          data: null,
+          result: {
+            details: 'Invalid API key',
+            timestamp: new Date(),
+            valid: false,
+          },
+        },
+        { status: HttpStatus.UNAUTHORIZED },
+      );
+    }
+
+    const searchParams = request.nextUrl.searchParams;
+
+    const MAX_PAGE_SIZE = 100;
+    const DEFAULT_PAGE_SIZE = 25;
+    const DEFAULT_PAGE = 1;
+    const DEFAULT_SORT_DIRECTION = 'desc' as const;
+    const DEFAULT_SORT_COLUMN = 'createdAt';
+
+    const allowedPageSizes = [10, 25, 50, 100];
+    const allowedSortDirections = ['asc', 'desc'] as const;
+    const allowedSortColumns = [
+      'version',
+      'createdAt',
+      'updatedAt',
+      'latest',
+    ] as const;
+
+    const allowedStatuses = Object.values(ReleaseStatus);
+
+    // Parse and validate parameters
+    const rawPage = parseInt(searchParams.get('page') as string);
+    const rawPageSize = parseInt(searchParams.get('pageSize') as string);
+    const rawSortColumn = searchParams.get('sortColumn');
+    const rawSortDirection = searchParams.get(
+      'sortDirection',
+    ) as (typeof allowedSortDirections)[number];
+    const rawStatus = searchParams.get('status') as ReleaseStatus | null;
+
+    const page = !isNaN(rawPage) && rawPage > 0 ? rawPage : DEFAULT_PAGE;
+
+    const pageSize =
+      !isNaN(rawPageSize) && allowedPageSizes.includes(rawPageSize)
+        ? Math.min(rawPageSize, MAX_PAGE_SIZE)
+        : DEFAULT_PAGE_SIZE;
+
+    const sortDirection = allowedSortDirections.includes(rawSortDirection)
+      ? rawSortDirection
+      : DEFAULT_SORT_DIRECTION;
+
+    const sortColumn =
+      rawSortColumn &&
+      allowedSortColumns.includes(
+        rawSortColumn as (typeof allowedSortColumns)[number],
+      )
+        ? rawSortColumn
+        : DEFAULT_SORT_COLUMN;
+
+    const search = searchParams.get('search') || '';
+    const productId = searchParams.get('productId');
+
+    const status =
+      rawStatus && allowedStatuses.includes(rawStatus) ? rawStatus : undefined;
+
+    // Validate productId (required)
+    if (!productId || !regex.uuidV4.test(productId)) {
+      const responseTime = Date.now() - requestTime.getTime();
+
+      logger.warn('Dev API: Invalid or missing productId for release listing', {
+        requestId,
+        teamId,
+        providedProductId: productId,
+        responseTimeMs: responseTime,
+        statusCode: HttpStatus.BAD_REQUEST,
+        ipAddress,
+        userAgent,
+      });
+
+      return NextResponse.json(
+        {
+          data: null,
+          result: {
+            details: 'Invalid or missing productId',
+            timestamp: new Date(),
+            valid: false,
+          },
+        },
+        { status: HttpStatus.BAD_REQUEST },
+      );
+    }
+
+    // Validate product exists and belongs to team
+    const product = await prisma.product.findFirst({
+      where: {
+        id: productId,
+        teamId: team.id,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!product) {
+      const responseTime = Date.now() - requestTime.getTime();
+
+      logger.warn('Dev API: Product not found for release listing', {
+        requestId,
+        teamId,
+        productId,
+        responseTimeMs: responseTime,
+        statusCode: HttpStatus.NOT_FOUND,
+        ipAddress,
+        userAgent,
+      });
+
+      return NextResponse.json(
+        {
+          data: null,
+          result: {
+            details: 'Product not found',
+            timestamp: new Date(),
+            valid: false,
+          },
+        },
+        { status: HttpStatus.NOT_FOUND },
+      );
+    }
+
+    const skip = (page - 1) * pageSize;
+
+    const where: Prisma.ReleaseWhereInput = {
+      teamId,
+      productId,
+      version: search
+        ? {
+            contains: search,
+            mode: 'insensitive',
+          }
+        : undefined,
+      status: status || undefined,
+    };
+
+    const [totalResults, releases] = await Promise.all([
+      prisma.release.count({ where }),
+      prisma.release.findMany({
+        where,
+        skip,
+        take: pageSize + 1,
+        orderBy: {
+          [sortColumn]: sortDirection,
+        },
+        include: {
+          product: true,
+          file: true,
+          allowedLicenses: true,
+          metadata: true,
+          branch: true,
+        },
+      }),
+    ]);
+
+    const hasNextPage = releases.length > pageSize;
+
+    const formattedReleases = releases.slice(0, pageSize).map((release) => ({
+      ...release,
+      allowedLicenses: release.allowedLicenses.map((license) => ({
+        ...license,
+        licenseKey: decryptString(license.licenseKey),
+        licenseKeyLookup: undefined,
+      })),
+    }));
+
+    const response: IExternalDevResponse = {
+      data: {
+        releases: formattedReleases,
+        hasNextPage,
+        totalResults,
+      },
+      result: {
+        details: 'Releases found',
+        timestamp: new Date(),
+        valid: true,
+      },
+    };
+
+    const responseTime = Date.now() - requestTime.getTime();
+
+    logger.info('Dev API: Releases retrieved successfully', {
+      requestId,
+      teamId,
+      productId,
+      totalResults,
+      returnedCount: formattedReleases.length,
+      hasNextPage,
+      responseTimeMs: responseTime,
+      statusCode: HttpStatus.OK,
+    });
+
+    return NextResponse.json(response);
+  } catch (error) {
+    const responseTime = Date.now() - requestTime.getTime();
+
+    logger.error('Dev API: Get releases failed', {
+      requestId,
+      teamId,
+      route: '/v1/dev/teams/[teamId]/releases',
+      error: error instanceof Error ? error.message : String(error),
+      errorType: error?.constructor?.name || 'Unknown',
+      responseTimeMs: responseTime,
+      ipAddress,
+      userAgent,
+    });
+
+    return NextResponse.json(
+      {
+        data: null,
+        result: {
+          details: 'Internal server error',
+          timestamp: new Date(),
+          valid: false,
+        },
+      },
+      { status: HttpStatus.INTERNAL_SERVER_ERROR },
+    );
+  }
+}
