@@ -1,0 +1,232 @@
+import { ILicenseGetSuccessResponse } from '@/app/api/(dashboard)/licenses/[slug]/route';
+import { LicenseStatusBadge } from '@/components/shared/badges/LicenseStatusBadge';
+import { DateConverter } from '@/components/shared/DateConverter';
+import { ClickableIdentifier } from '@/components/shared/misc/ClickableIdentifier';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { getLicenseStatus } from '@lukittu/shared';
+import { Infinity, User } from 'lucide-react';
+import { useTranslations } from 'next-intl';
+import Link from 'next/link';
+import { useState } from 'react';
+
+interface LicenseDetailsProps {
+  license: ILicenseGetSuccessResponse['license'] | null;
+}
+
+export function LicenseDetails({ license }: LicenseDetailsProps) {
+  const [showMore, setShowMore] = useState(false);
+  const t = useTranslations();
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row flex-wrap items-center gap-2 border-b py-5">
+        <CardTitle className="flex items-center text-xl font-bold">
+          {t('general.details')}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <h3 className="text-sm font-semibold">ID</h3>
+            <div className="text-sm font-semibold">
+              {license ? (
+                <ClickableIdentifier value={license.id} />
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Skeleton className="h-4 w-4 shrink-0" />
+                  <Skeleton className="h-4 w-48" />
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-col gap-2">
+            <h3 className="text-sm font-semibold">
+              {t('dashboard.licenses.status')}
+            </h3>
+            <div className="text-sm text-muted-foreground">
+              {license ? (
+                <LicenseStatusBadge
+                  className="text-xs"
+                  status={getLicenseStatus(license)}
+                />
+              ) : (
+                <Skeleton className="h-5 w-20" />
+              )}
+            </div>
+          </div>
+          <div className="flex flex-col gap-2">
+            <h3 className="text-sm font-semibold">
+              {t('dashboard.licenses.expiration_type')}
+            </h3>
+            <div className="text-sm text-muted-foreground">
+              {license ? (
+                t(`general.${license.expirationType.toLowerCase()}` as any)
+              ) : (
+                <Skeleton className="h-4 w-24" />
+              )}
+            </div>
+          </div>
+          {license ? (
+            license.expirationType === 'DATE' && (
+              <div className="flex flex-col gap-2">
+                <h3 className="text-sm font-semibold">
+                  {t('dashboard.licenses.expiration_date')}
+                </h3>
+                <p className="text-sm text-muted-foreground">
+                  <DateConverter date={license.expirationDate!} />
+                </p>
+              </div>
+            )
+          ) : (
+            <div className="flex flex-col gap-2">
+              <h3 className="text-sm font-semibold">
+                {t('dashboard.licenses.expiration_date')}
+              </h3>
+              <Skeleton className="h-4 w-28" />
+            </div>
+          )}
+          {license ? (
+            license.expirationType === 'DURATION' && (
+              <>
+                <div className="flex flex-col gap-2">
+                  <h3 className="text-sm font-semibold">
+                    {t('dashboard.licenses.expiration_start')}
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    {t(
+                      `dashboard.licenses.${license.expirationStart.toLowerCase()}` as any,
+                    )}
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <h3 className="text-sm font-semibold">
+                    {t('dashboard.licenses.expiration_days')}
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    {license.expirationDays}
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <h3 className="text-sm font-semibold">
+                    {t('dashboard.licenses.expiration_date')}
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    {license.expirationDate ? (
+                      <DateConverter date={license.expirationDate} />
+                    ) : (
+                      t('dashboard.licenses.not_yet_activated')
+                    )}
+                  </p>
+                </div>
+              </>
+            )
+          ) : (
+            <div className="space-y-4">
+              <div className="flex flex-col gap-2">
+                <h3 className="text-sm font-semibold">
+                  {t('dashboard.licenses.expiration_start')}
+                </h3>
+                <Skeleton className="h-4 w-32" />
+              </div>
+              <div className="flex flex-col gap-2">
+                <h3 className="text-sm font-semibold">
+                  {t('dashboard.licenses.expiration_days')}
+                </h3>
+                <Skeleton className="h-4 w-16" />
+              </div>
+            </div>
+          )}
+          <div className="flex flex-col gap-2">
+            <h3 className="text-sm font-semibold">
+              {t('dashboard.licenses.ip_limit')}
+            </h3>
+            <div className="text-sm text-muted-foreground">
+              {license ? (
+                (license.ipLimit ?? <Infinity className="h-4 w-4 shrink-0" />)
+              ) : (
+                <Skeleton className="h-4 w-8" />
+              )}
+            </div>
+          </div>
+          <div className="flex flex-col gap-2">
+            <h3 className="text-sm font-semibold">
+              {t('dashboard.licenses.hwid_limit')}
+            </h3>
+            <div className="text-sm text-muted-foreground">
+              {license ? (
+                (license.hwidLimit ?? <Infinity className="h-4 w-4 shrink-0" />)
+              ) : (
+                <Skeleton className="h-4 w-8" />
+              )}
+            </div>
+          </div>
+          {showMore && (
+            <>
+              <div className="flex flex-col gap-2">
+                <h3 className="text-sm font-semibold">
+                  {t('general.created_at')}
+                </h3>
+                <div className="text-sm text-muted-foreground">
+                  {license ? (
+                    <DateConverter date={license.createdAt} />
+                  ) : (
+                    <Skeleton className="h-4 w-28" />
+                  )}
+                </div>
+              </div>
+              <div className="flex flex-col gap-2">
+                <h3 className="text-sm font-semibold">
+                  {t('general.updated_at')}
+                </h3>
+                <div className="text-sm text-muted-foreground">
+                  {license ? (
+                    <DateConverter date={license.updatedAt} />
+                  ) : (
+                    <Skeleton className="h-4 w-28" />
+                  )}
+                </div>
+              </div>
+              <div className="flex flex-col gap-2">
+                <h3 className="text-sm font-semibold">
+                  {t('general.created_by')}
+                </h3>
+                <div className="text-sm font-semibold">
+                  {license ? (
+                    license.createdBy ? (
+                      <span className="flex items-center gap-2">
+                        <User className="h-4 w-4 shrink-0" />
+                        <Link
+                          className="text-primary hover:underline"
+                          href={`/dashboard/team/members?memberId=${license.createdBy.id}`}
+                        >
+                          {license.createdBy.fullName}
+                        </Link>
+                      </span>
+                    ) : (
+                      t('general.unknown')
+                    )
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <Skeleton className="h-4 w-4 shrink-0" />
+                      <Skeleton className="h-4 w-24" />
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+        <Button
+          className="mt-2 px-0"
+          size="sm"
+          variant="link"
+          onClick={() => setShowMore(!showMore)}
+        >
+          {showMore ? t('general.show_less') : t('general.show_more')}
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}

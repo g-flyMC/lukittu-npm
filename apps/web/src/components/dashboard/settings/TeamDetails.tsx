@@ -1,0 +1,158 @@
+import { ITeamGetSuccessResponse } from '@/app/api/(dashboard)/teams/[slug]/route';
+import { DateConverter } from '@/components/shared/DateConverter';
+import { ClickableIdentifier } from '@/components/shared/misc/ClickableIdentifier';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { CheckCircle2, XCircle } from 'lucide-react';
+import { useTranslations } from 'next-intl';
+import { useState } from 'react';
+
+interface TeamDetailsProps {
+  team: ITeamGetSuccessResponse['team'] | null;
+}
+
+export function TeamDetails({ team }: TeamDetailsProps) {
+  const [showMore, setShowMore] = useState(false);
+  const t = useTranslations();
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row flex-wrap items-center gap-2 border-b py-5">
+        <CardTitle className="flex items-center text-xl font-bold">
+          {t('general.details')}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <h3 className="text-sm font-semibold">ID</h3>
+            <div className="text-sm font-semibold">
+              {team ? (
+                <ClickableIdentifier value={team.id} />
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Skeleton className="h-4 w-4 shrink-0" />
+                  <Skeleton className="h-4 w-48" />
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-col gap-2">
+            <h3 className="text-sm font-semibold">{t('general.name')}</h3>
+            <div className="text-sm text-muted-foreground">
+              {team?.name ? team.name : <Skeleton className="h-4 w-32" />}
+            </div>
+          </div>
+          <div className="flex flex-col gap-2">
+            <h3 className="text-sm font-semibold">
+              {t('dashboard.navigation.members')}
+            </h3>
+            <div className="text-sm text-muted-foreground">
+              {team?.counts.memberCount ? (
+                team.counts.memberCount
+              ) : (
+                <Skeleton className="h-4 w-8" />
+              )}
+            </div>
+          </div>
+          <div className="flex flex-col gap-2">
+            <h3 className="text-sm font-semibold">{t('general.owner')}</h3>
+            <div className="text-sm text-muted-foreground">
+              {team?.owner ? (
+                team.owner.email
+              ) : (
+                <Skeleton className="h-4 w-56" />
+              )}
+            </div>
+          </div>
+          <div className="flex flex-col gap-2">
+            <h3 className="text-sm font-semibold">
+              {t('general.subscription')}
+            </h3>
+            <div className="text-sm text-muted-foreground">
+              {team ? (
+                team.subscription?.status === 'active' ? (
+                  <Badge className="text-xs" variant="success">
+                    <CheckCircle2 className="mr-1 h-3 w-3" />
+                    {t('general.active')}
+                  </Badge>
+                ) : (
+                  <Badge className="text-xs" variant="secondary">
+                    <XCircle className="mr-1 h-3 w-3" />
+                    {t('general.inactive')}
+                  </Badge>
+                )
+              ) : (
+                <Skeleton className="h-5 w-20" />
+              )}
+            </div>
+          </div>
+
+          {team?.subscription?.status === 'active' && (
+            <>
+              <div className="flex flex-col gap-2">
+                <h3 className="text-sm font-semibold">{t('general.plan')}</h3>
+                <div className="text-sm text-muted-foreground">
+                  {team.subscription.plan}
+                </div>
+              </div>
+              <div className="flex flex-col gap-2">
+                <h3 className="text-sm font-semibold">
+                  {t('general.billing_period_ends')}
+                </h3>
+                <div className="text-sm text-muted-foreground">
+                  <DateConverter
+                    date={
+                      team.subscription.billingPeriodEndsAt
+                        ? new Date(team.subscription.billingPeriodEndsAt)
+                        : new Date(0)
+                    }
+                  />
+                </div>
+              </div>
+            </>
+          )}
+
+          {showMore && (
+            <>
+              <div className="flex flex-col gap-2">
+                <h3 className="text-sm font-semibold">
+                  {t('general.created_at')}
+                </h3>
+                <div className="text-sm text-muted-foreground">
+                  {team ? (
+                    <DateConverter date={team.createdAt} />
+                  ) : (
+                    <Skeleton className="h-4 w-28" />
+                  )}
+                </div>
+              </div>
+              <div className="flex flex-col gap-2">
+                <h3 className="text-sm font-semibold">
+                  {t('general.updated_at')}
+                </h3>
+                <div className="text-sm text-muted-foreground">
+                  {team ? (
+                    <DateConverter date={team.updatedAt} />
+                  ) : (
+                    <Skeleton className="h-4 w-28" />
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+        <Button
+          className="mt-2 px-0"
+          size="sm"
+          variant="link"
+          onClick={() => setShowMore(!showMore)}
+        >
+          {showMore ? t('general.show_less') : t('general.show_more')}
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
