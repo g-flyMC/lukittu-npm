@@ -1,0 +1,210 @@
+import { HttpStatus } from '@/types/http-status';
+import {
+  logger,
+  prisma,
+  RequestMethod,
+  RequestStatus,
+  RequestType,
+} from '@lukittu/shared';
+import { NextRequest, NextResponse } from 'next/server';
+import 'server-only';
+import { getCloudflareVisitorData } from '../providers/cloudflare';
+import { iso2toIso3 } from '../utils/country-helpers';
+import { getIp, getUserAgent } from '../utils/header-helpers';
+
+const LAST_ACTIVE_THROTTLE_MS = 3 * 60 * 1000; // 3 minutes
+
+interface LogRequestProps {
+  pathname: string;
+  requestBody: any;
+  responseBody: any;
+  requestQuery?: any;
+  requestTime: Date;
+  statusCode: number;
+  status: RequestStatus;
+  customerId?: string;
+  productId?: string;
+  licenseKeyLookup?: string;
+  teamId?: string;
+  method: string;
+  hardwareIdentifier?: string;
+  releaseId?: string;
+  type: RequestType;
+  releaseFileId?: string;
+}
+
+export async function logRequest({
+  requestBody,
+  responseBody,
+  requestTime,
+  status,
+  statusCode,
+  customerId,
+  productId,
+  licenseKeyLookup,
+  requestQuery,
+  hardwareIdentifier,
+  teamId,
+  method,
+  pathname,
+  type,
+  releaseFileId,
+  releaseId,
+}: LogRequestProps) {
+  try {
+    const ipAddress = await getIp();
+    const geoData = await getCloudflareVisitorData();
+    const longitude = geoData?.long || null;
+    const latitude = geoData?.lat || null;
+    const hasBothLongitudeAndLatitude = longitude && latitude;
+    const countryAlpha3: string | null = geoData?.alpha2
+      ? iso2toIso3(geoData.alpha2!)
+      : null;
+
+    await prisma.requestLog.create({
+      data: {
+        version: process.env.version!,
+        method: method.toUpperCase() as RequestMethod,
+        path: pathname,
+        userAgent: await getUserAgent(),
+        statusCode,
+        longitude: hasBothLongitudeAndLatitude ? longitude : null,
+        latitude: hasBothLongitudeAndLatitude ? latitude : null,
+        responseTime: new Date().getTime() - requestTime.getTime(),
+        status,
+        requestBody,
+        requestQuery,
+        responseBody,
+        type,
+        hardwareIdentifier,
+        ipAddress,
+        release: releaseId ? { connect: { id: releaseId } } : undefined,
+        releaseFile: releaseFileId
+          ? { connect: { id: releaseFileId } }
+          : undefined,
+        country: countryAlpha3,
+        team: { connect: { id: teamId } },
+        customer: customerId ? { connect: { id: customerId } } : undefined,
+        product: productId ? { connect: { id: productId } } : undefined,
+        license:
+          licenseKeyLookup && teamId
+            ? {
+                connect: {
+                  teamId_licenseKeyLookup: {
+                    teamId,
+                    licenseKeyLookup,
+                  },
+                },
+              }
+            : undefined,
+      },
+    });
+
+    if (licenseKeyLookup && teamId) {
+      const staleCutoff = new Date(Date.now() - LAST_ACTIVE_THROTTLE_MS);
+      await prisma.license.updateMany({
+        where: {
+          teamId,
+          licenseKeyLookup,
+          lastActiveAt: { lt: staleCutoff },
+        },
+        data: {
+          lastActiveAt: new Date(),
+        },
+      });
+    }
+  } catch (error) {
+    logger.error("Error logging request in 'license/verify' route", error);
+  }
+}
+
+interface HandleLoggedRequestResponse {
+  body: any;
+  request: NextRequest;
+  requestTime: Date;
+  status: RequestStatus;
+  hardwareIdentifier?: string;
+  query?: any;
+  response: {
+    data: any;
+    result: {
+      timestamp: Date;
+      valid: boolean;
+      details: string;
+      challengeResponse?: string;
+    };
+  };
+  httpStatus: HttpStatus;
+  customerId?: string;
+  productId?: string;
+  type: RequestType;
+  teamId?: string;
+  releaseId?: string;
+  releaseFileId?: string;
+  licenseKeyLookup?: string;
+}
+
+export interface IExternalVerificationResponse {
+  data: any;
+  result: {
+    timestamp: Date;
+    valid: boolean;
+    details: string;
+    code: RequestStatus;
+    challengeResponse?: string;
+  };
+}
+
+export async function loggedResponse({
+  body,
+  query,
+  request,
+  requestTime,
+  status,
+  teamId,
+  response,
+  httpStatus,
+  customerId,
+  productId,
+  licenseKeyLookup,
+  hardwareIdentifier,
+  releaseFileId,
+  releaseId,
+  type,
+}: HandleLoggedRequestResponse): Promise<
+  NextResponse<IExternalVerificationResponse>
+> {
+  const responseBody = {
+    data: response.data,
+    result: {
+      timestamp: response.result.timestamp,
+      valid: response.result.valid,
+      details: response.result.details,
+      code: status,
+      challengeResponse: response.result.challengeResponse,
+    },
+  };
+
+  if (teamId) {
+    logRequest({
+      hardwareIdentifier,
+      pathname: request.nextUrl.pathname,
+      requestBody: body,
+      responseBody,
+      requestTime,
+      status,
+      customerId,
+      productId,
+      licenseKeyLookup,
+      teamId,
+      requestQuery: query,
+      statusCode: httpStatus,
+      method: request.method,
+      releaseFileId,
+      releaseId,
+      type,
+    });
+  }
+
+  return NextResponse.json(responseBody, { status: httpStatus });
+}
