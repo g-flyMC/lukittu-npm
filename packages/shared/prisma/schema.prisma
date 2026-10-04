@@ -177,6 +177,33 @@ enum WebhookEventStatus {
     RETRY_SCHEDULED // Event delivery failed but is scheduled for retry
 }
 
+enum ProtectionMode {
+    NONE
+    LOADER
+    INTEGRATED
+}
+
+enum ProductTargetType {
+    PLUGIN
+    SERVER_CORE
+}
+
+enum UpdatePolicyMode {
+    AUTO
+    MANUAL
+}
+
+enum ReleaseChannelPolicy {
+    STABLE_ONLY
+    ALL_CHANNELS
+}
+
+enum ObfuscationStatus {
+    PENDING
+    SUCCESS
+    FAILED
+}
+
 enum WebhookEventType {
     LICENSE_CREATED
     LICENSE_UPDATED
@@ -384,6 +411,10 @@ model Product {
     branches        ReleaseBranch[]
     requestLogs     RequestLog[]
     discordRoles    ProductDiscordRole[]
+    protectionMode       ProtectionMode       @default(NONE)
+    targetType           ProductTargetType    @default(PLUGIN)
+    updatePolicyMode     UpdatePolicyMode     @default(MANUAL)
+    releaseChannelPolicy ReleaseChannelPolicy @default(ALL_CHANNELS)
     createdAt       DateTime             @default(now())
     updatedAt       DateTime             @updatedAt
 
@@ -460,6 +491,20 @@ model ReleaseFile {
     mainClassName String?
     createdAt     DateTime     @default(now())
     requestLogs   RequestLog[]
+    obfuscation   ReleaseFileObfuscation?
+}
+
+model ReleaseFileObfuscation {
+    id              String            @id @default(uuid())
+    releaseFileId   String            @unique
+    releaseFile     ReleaseFile       @relation(fields: [releaseFileId], references: [id], onDelete: Cascade)
+    zkmVersion      String
+    status          ObfuscationStatus @default(PENDING)
+    buildStartedAt  DateTime?
+    buildFinishedAt DateTime?
+    errorMessage    String?
+    createdAt       DateTime          @default(now())
+    updatedAt       DateTime          @updatedAt
 }
 
 model Address {
