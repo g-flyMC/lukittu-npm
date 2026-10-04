@@ -1,0 +1,673 @@
+import { MAX_RELEASE_FILE_SIZE } from '@/lib/constants/limits';
+import { createAuditLog } from '@/lib/logging/audit-log';
+import { uploadFileToPrivateS3 } from '@/lib/providers/aws-s3';
+import { isRateLimited } from '@/lib/security/rate-limiter';
+import { getSession } from '@/lib/security/session';
+import {
+  getIp,
+  getLanguage,
+  getSelectedTeam,
+} from '@/lib/utils/header-helpers';
+import { getMainClassFromJar } from '@/lib/utils/java-helpers';
+import { bytesToMb, bytesToSize } from '@/lib/utils/number-helpers';
+import {
+  SetReleaseSchema,
+  setReleaseSchema,
+} from '@/lib/validation/products/set-release-schema';
+import { ErrorResponse } from '@/types/common-api-types';
+import { HttpStatus } from '@/types/http-status';
+import {
+  attemptWebhookDelivery,
+  AuditLogAction,
+  AuditLogSource,
+  AuditLogTargetType,
+  createReleasePayload,
+  createWebhookEvents,
+  decryptString,
+  generateMD5Hash,
+  License,
+  logger,
+  Metadata,
+  prisma,
+  Prisma,
+  Product,
+  regex,
+  Release,
+  ReleaseBranch,
+  ReleaseFile,
+  WebhookEventType,
+} from '@lukittu/shared';
+import { getTranslations } from 'next-intl/server';
+import { after, NextRequest, NextResponse } from 'next/server';
+
+export type IProductsReleasesCreateSuccessResponse = {
+  release: Release;
+};
+
+export type IProductsReleasesCreateResponse =
+  IProductsReleasesCreateSuccessResponse | ErrorResponse;
+
+export async function POST(request: NextRequest) {
+  const t = await getTranslations({ locale: await getLanguage() });
+
+  try {
+    const formData = await request.formData();
+    const fileEntry = formData.get('file');
+    const dataEntry = formData.get('data');
+
+    if (typeof dataEntry !== 'string') {
+      return NextResponse.json(
+        {
+          message: t('validation.bad_request'),
+        },
+        { status: HttpStatus.BAD_REQUEST },
+      );
+    }
+
+    if (fileEntry !== null && !(fileEntry instanceof File)) {
+      return NextResponse.json(
+        {
+          message: t('validation.bad_request'),
+        },
+        { status: HttpStatus.BAD_REQUEST },
+      );
+    }
+
+    const file = fileEntry;
+
+    let body: SetReleaseSchema;
+    try {
+      body = JSON.parse(dataEntry) as SetReleaseSchema;
+    } catch {
+      return NextResponse.json(
+        {
+          message: t('validation.bad_request'),
+        },
+        { status: HttpStatus.BAD_REQUEST },
+      );
+    }
+
+    const validated = await setReleaseSchema(t).safeParseAsync(body);
+
+    if (!validated.success) {
+      return NextResponse.json(
+        {
+          message: validated.error.errors[0].message,
+          field: validated.error.errors[0].path[0],
+        },
+        { status: HttpStatus.BAD_REQUEST },
+      );
+    }
+
+    const {
+      metadata,
+      productId,
+      status,
+      version,
+      setAsLatest,
+      licenseIds,
+      branchId,
+    } = body;
+
+    if (file && file.size > MAX_RELEASE_FILE_SIZE) {
+      return NextResponse.json(
+        {
+          message: t('validation.file_too_large', {
+            size: bytesToSize(MAX_RELEASE_FILE_SIZE),
+          }),
+        },
+        { status: HttpStatus.BAD_REQUEST },
+      );
+    }
+
+    const ip = await getIp();
+    if (ip) {
+      const key = `releases-create:${ip}`;
+      const isLimited = await isRateLimited(key, 5, 300); // 5 requests per 5 minutes
+
+      if (isLimited) {
+        return NextResponse.json(
+          {
+            message: t('validation.too_many_requests'),
+          },
+          { status: HttpStatus.TOO_MANY_REQUESTS },
+        );
+      }
+    }
+
+    const selectedTeam = await getSelectedTeam();
+
+    if (!selectedTeam) {
+      return NextResponse.json(
+        {
+          message: t('validation.team_not_found'),
+        },
+        { status: HttpStatus.NOT_FOUND },
+      );
+    }
+
+    const session = await getSession({
+      user: {
+        include: {
+          teams: {
+            where: {
+              id: selectedTeam,
+              deletedAt: null,
+            },
+            include: {
+              releases: {
+                where: {
+                  productId,
+                },
+              },
+              products: {
+                where: {
+                  id: productId,
+                },
+                include: {
+                  branches: branchId
+                    ? {
+                        where: {
+                          id: branchId,
+                        },
+                      }
+                    : undefined,
+                },
+              },
+              limits: true,
+              metadata: true,
+            },
+          },
+        },
+      },
+    });
+
+    if (!session) {
+      return NextResponse.json(
+        {
+          message: t('validation.unauthorized'),
+        },
+        { status: HttpStatus.UNAUTHORIZED },
+      );
+    }
+
+    if (!session.user.teams.length) {
+      return NextResponse.json(
+        {
+          message: t('validation.team_not_found'),
+        },
+        { status: HttpStatus.NOT_FOUND },
+      );
+    }
+
+    const team = session.user.teams[0];
+    const previousProductReleases = team.releases;
+
+    if (!team.limits) {
+      // Should never happen
+      return NextResponse.json(
+        {
+          message: t('general.server_error'),
+        },
+        { status: HttpStatus.NOT_FOUND },
+      );
+    }
+
+    if (file && !team.limits.allowClassloader) {
+      return NextResponse.json(
+        {
+          message: t('validation.paid_subsciption_required'),
+        },
+        { status: HttpStatus.BAD_REQUEST },
+      );
+    }
+
+    if (!team.products.length) {
+      return NextResponse.json(
+        {
+          message: t('validation.product_not_found'),
+        },
+        { status: HttpStatus.NOT_FOUND },
+      );
+    }
+
+    if (previousProductReleases.length >= team.limits.maxReleasesPerProduct) {
+      return NextResponse.json(
+        {
+          message: t('validation.max_releases_reached'),
+        },
+        { status: HttpStatus.BAD_REQUEST },
+      );
+    }
+
+    if (licenseIds.length) {
+      const licenses = await prisma.license.findMany({
+        where: {
+          id: {
+            in: licenseIds,
+          },
+        },
+      });
+
+      if (licenses.length !== licenseIds.length) {
+        return NextResponse.json(
+          {
+            message: t('validation.license_not_found'),
+          },
+          { status: HttpStatus.NOT_FOUND },
+        );
+      }
+
+      if (setAsLatest) {
+        return NextResponse.json(
+          {
+            message: t('validation.latest_release_not_allowed_with_licenses'),
+          },
+          { status: HttpStatus.BAD_REQUEST },
+        );
+      }
+    }
+
+    if (branchId) {
+      const product = team.products[0];
+      const branch = product.branches.find((branch) => branch.id === branchId);
+
+      if (!branch) {
+        return NextResponse.json(
+          {
+            message: t('validation.branch_not_found'),
+          },
+          { status: HttpStatus.NOT_FOUND },
+        );
+      }
+    }
+
+    if (
+      previousProductReleases.find(
+        (release) =>
+          release.version === version &&
+          release.productId === productId &&
+          release.branchId === branchId,
+      )
+    ) {
+      return NextResponse.json(
+        {
+          message: t('validation.release_exists_this_branch'),
+          field: 'version',
+        },
+        { status: HttpStatus.CONFLICT },
+      );
+    }
+
+    let fileKey: string | null = null;
+    let checksum: string | null = null;
+    let mainClassName: string | null = null;
+    if (file) {
+      const teamReleases = await prisma.release.findMany({
+        where: {
+          teamId: team.id,
+        },
+        include: {
+          file: true,
+        },
+      });
+
+      const totalStorageUsed = teamReleases.reduce(
+        (acc, release) => acc + (release.file?.size || 0),
+        0,
+      );
+
+      const maxStorage = team.limits.maxStorage || 0; // In MB
+      const totalStorageUsedMb = bytesToMb(totalStorageUsed);
+      const uploadeReleaseSizeMb = bytesToMb(file.size);
+
+      if (totalStorageUsedMb + uploadeReleaseSizeMb > maxStorage) {
+        return NextResponse.json(
+          {
+            message: t('validation.storage_limit_reached'),
+          },
+          { status: HttpStatus.BAD_REQUEST },
+        );
+      }
+
+      const generatedChecksum = await generateMD5Hash(file);
+
+      if (!generatedChecksum) {
+        return NextResponse.json(
+          {
+            message: t('general.server_error'),
+          },
+          { status: HttpStatus.INTERNAL_SERVER_ERROR },
+        );
+      }
+
+      checksum = generatedChecksum;
+
+      const fileExtension = file.name.split('.').pop();
+
+      if (!fileExtension || !fileExtension.length) {
+        return NextResponse.json(
+          {
+            message: t('validation.file_extension_not_found'),
+          },
+          { status: HttpStatus.BAD_REQUEST },
+        );
+      }
+
+      if (fileExtension === 'jar') {
+        mainClassName = await getMainClassFromJar(file);
+      }
+
+      fileKey = `releases/${team.id}/${productId}-${version}.${fileExtension}`;
+      const fileStream = file.stream();
+      await uploadFileToPrivateS3(
+        process.env.PRIVATE_OBJECT_STORAGE_BUCKET_NAME!,
+        fileKey,
+        fileStream,
+        file.type,
+      );
+    }
+
+    let webhookEventIds: string[] = [];
+
+    const response = await prisma.$transaction(async (prisma) => {
+      const isPublished = status === 'PUBLISHED';
+
+      if (isPublished && setAsLatest) {
+        await prisma.release.updateMany({
+          where: {
+            productId,
+            branchId, // Only clear "latest" flag for releases in the same branch
+          },
+          data: {
+            latest: false,
+          },
+        });
+      }
+
+      const release = await prisma.release.create({
+        data: {
+          metadata: {
+            createMany: {
+              data: metadata.map((m) => ({
+                ...m,
+                teamId: team.id,
+              })),
+            },
+          },
+          productId,
+          status,
+          version,
+          teamId: team.id,
+          createdByUserId: session.user.id,
+          latest: Boolean(setAsLatest && isPublished),
+          branchId,
+          allowedLicenses: licenseIds.length
+            ? {
+                connect: licenseIds.map((id) => ({
+                  id,
+                })),
+              }
+            : undefined,
+          file: file
+            ? {
+                create: {
+                  key: fileKey!,
+                  size: file.size,
+                  checksum: checksum!,
+                  name: file.name,
+                  mainClassName,
+                },
+              }
+            : undefined,
+        },
+        include: {
+          metadata: true,
+          product: true,
+          file: true,
+          branch: true,
+        },
+      });
+
+      const response = {
+        release,
+      };
+
+      await createAuditLog({
+        userId: session.user.id,
+        teamId: selectedTeam,
+        action: AuditLogAction.CREATE_RELEASE,
+        targetId: release.id,
+        targetType: AuditLogTargetType.RELEASE,
+        responseBody: response,
+        requestBody: body,
+        source: AuditLogSource.DASHBOARD,
+        tx: prisma,
+      });
+
+      webhookEventIds = await createWebhookEvents({
+        eventType: WebhookEventType.RELEASE_CREATED,
+        teamId: selectedTeam,
+        payload: createReleasePayload(release),
+        userId: session.user.id,
+        source: AuditLogSource.DASHBOARD,
+        tx: prisma,
+      });
+
+      return response;
+    });
+
+    after(async () => {
+      await attemptWebhookDelivery(webhookEventIds);
+    });
+
+    return NextResponse.json(response, { status: HttpStatus.CREATED });
+  } catch (error) {
+    logger.error("Error occurred in '/products/releases' route", error);
+    return NextResponse.json(
+      {
+        message: t('general.server_error'),
+      },
+      { status: HttpStatus.INTERNAL_SERVER_ERROR },
+    );
+  }
+}
+
+export type IProductsReleasesGetSuccessResponse = {
+  releases: (Release & {
+    file: ReleaseFile | null;
+    product: Product;
+    allowedLicenses: Omit<License, 'licenseKeyLookup'>[];
+    metadata: Metadata[];
+    branch: ReleaseBranch | null;
+  })[];
+  totalResults: number;
+  hasLatestRelease: boolean;
+  hasResults: boolean;
+};
+
+export type IProductsReleasesGetResponse =
+  ErrorResponse | IProductsReleasesGetSuccessResponse;
+
+export async function GET(
+  request: NextRequest,
+): Promise<NextResponse<IProductsReleasesGetResponse>> {
+  const t = await getTranslations({ locale: await getLanguage() });
+
+  try {
+    const searchParams = request.nextUrl.searchParams;
+    const selectedTeam = await getSelectedTeam();
+
+    if (!selectedTeam) {
+      return NextResponse.json(
+        {
+          message: t('validation.team_not_found'),
+        },
+        { status: HttpStatus.NOT_FOUND },
+      );
+    }
+
+    const allowedPageSizes = [10, 25, 50, 100];
+    const allowedSortDirections = ['asc', 'desc'];
+    const allowedSortColumns = ['version', 'createdAt', 'updatedAt', 'latest'];
+
+    const search = (searchParams.get('search') as string) || '';
+
+    const productId = searchParams.get('productId') as string;
+    let page = parseInt(searchParams.get('page') as string) || 1;
+    let pageSize = parseInt(searchParams.get('pageSize') as string) || 10;
+    let sortColumn = searchParams.get('sortColumn') as string;
+    let sortDirection = searchParams.get('sortDirection') as 'asc' | 'desc';
+
+    if (!productId || !regex.uuidV4.test(productId)) {
+      return NextResponse.json(
+        {
+          message: t('validation.bad_request'),
+        },
+        { status: HttpStatus.BAD_REQUEST },
+      );
+    }
+
+    if (!allowedSortDirections.includes(sortDirection)) {
+      sortDirection = 'desc';
+    }
+
+    if (!sortColumn || !allowedSortColumns.includes(sortColumn)) {
+      sortColumn = 'createdAt';
+    }
+
+    if (!allowedPageSizes.includes(pageSize)) {
+      pageSize = 25;
+    }
+
+    if (page < 1) {
+      page = 1;
+    }
+
+    const skip = (page - 1) * pageSize;
+    const take = pageSize;
+
+    const where = {
+      productId: productId || undefined,
+      version: search
+        ? {
+            contains: search,
+            mode: 'insensitive',
+          }
+        : undefined,
+      teamId: selectedTeam,
+    } as Prisma.ReleaseWhereInput;
+
+    const session = await getSession({
+      user: {
+        include: {
+          teams: {
+            where: {
+              deletedAt: null,
+              id: selectedTeam,
+            },
+          },
+        },
+      },
+    });
+
+    if (!session) {
+      return NextResponse.json(
+        {
+          message: t('validation.unauthorized'),
+        },
+        { status: HttpStatus.UNAUTHORIZED },
+      );
+    }
+
+    if (!session.user.teams.length) {
+      return NextResponse.json(
+        {
+          message: t('validation.team_not_found'),
+        },
+        { status: HttpStatus.NOT_FOUND },
+      );
+    }
+
+    const [releases, hasResults, totalResults, hasLatestReleasesData] =
+      await Promise.all([
+        prisma.release.findMany({
+          where,
+          include: {
+            product: true,
+            file: true,
+            allowedLicenses: true,
+            metadata: true,
+            branch: true,
+          },
+          skip,
+          take,
+          orderBy: {
+            [sortColumn]: sortDirection,
+          },
+        }),
+        prisma.release.findFirst({
+          where: {
+            teamId: selectedTeam,
+            productId,
+          },
+          select: {
+            id: true,
+          },
+        }),
+        prisma.release.count({
+          where,
+        }),
+        prisma.$queryRaw`
+          WITH UniqueBranches AS (
+            SELECT DISTINCT "branchId"
+            FROM "Release"
+            WHERE "teamId" = ${selectedTeam}
+            AND "productId" = ${productId}
+          )
+          SELECT ub."branchId", 
+                CASE WHEN COUNT(r.id) > 0 THEN true ELSE false END AS "hasLatestRelease"
+          FROM UniqueBranches ub
+          LEFT JOIN "Release" r ON ((ub."branchId" IS NULL AND r."branchId" IS NULL) 
+                                OR (ub."branchId" IS NOT NULL AND r."branchId" = ub."branchId"))
+            AND r."teamId" = ${selectedTeam}
+            AND r."productId" = ${productId}
+            AND r.latest = true
+          GROUP BY ub."branchId"
+        `,
+      ]);
+
+    const hasLatestReleases = hasLatestReleasesData as {
+      branchId: string | null;
+      hasLatestRelease: boolean;
+    }[];
+
+    const hasLatestForAll = hasLatestReleases.every(
+      (release) => release.hasLatestRelease,
+    );
+
+    const releasesFormatted = releases.map((release) => ({
+      ...release,
+      allowedLicenses: release.allowedLicenses.map((license) => ({
+        ...license,
+        licenseKey: decryptString(license.licenseKey),
+        licenseKeyLookup: undefined,
+      })),
+    }));
+
+    return NextResponse.json({
+      releases: releasesFormatted,
+      totalResults,
+      hasLatestRelease: hasLatestForAll,
+      hasResults: Boolean(hasResults),
+    });
+  } catch (error) {
+    logger.error("Error occurred in 'products/releases' route", error);
+    return NextResponse.json(
+      {
+        message: t('general.server_error'),
+      },
+      { status: HttpStatus.INTERNAL_SERVER_ERROR },
+    );
+  }
+}
