@@ -1,0 +1,11 @@
+components:
+  responses:
+    # Simplified standard error response - covers all error cases
+    StandardError:
+      description: |
+        Standard API error response. All errors follow the same `{data, result}` structure.
+        The HTTP status code indicates the general error category, while `result.code` provides specific error details.
+      content:
+        application/json:
+          schema:
+            $ref: '../schemas/common.yaml#/components/schemas/ErrorResponse'

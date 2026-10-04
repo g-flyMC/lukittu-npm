@@ -1,0 +1,329 @@
+components:
+  schemas:
+    # Base product data structure
+    ProductData:
+      type: object
+      properties:
+        id:
+          $ref: './common.yaml#/components/schemas/UUID'
+          description: Unique product identifier
+        name:
+          type: string
+          description: Product name
+        url:
+          type: string
+          nullable: true
+          description: Product URL or homepage
+        metadata:
+          $ref: './common.yaml#/components/schemas/Metadata'
+        teamId:
+          $ref: './common.yaml#/components/schemas/UUID'
+          description: Team that owns this product
+        createdByUserId:
+          $ref: './common.yaml#/components/schemas/UUID'
+          description: User who created this product
+        createdAt:
+          type: string
+          format: date-time
+          description: Product creation timestamp
+        updatedAt:
+          type: string
+          format: date-time
+          description: Product last update timestamp
+      required:
+        - id
+        - name
+        - teamId
+        - createdByUserId
+        - createdAt
+        - updatedAt
+
+    # Product data returned in verification responses (filtered by ReturnedFields)
+    ProductVerificationData:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Product name
+        url:
+          type: string
+          description: Product URL
+        latestRelease:
+          type: object
+          description: Information about the latest release for this product
+          properties:
+            version:
+              type: string
+              description: Latest release version
+            createdAt:
+              type: string
+              format: date-time
+              description: When the release was created
+          required:
+            - version
+            - createdAt
+        metadata:
+          type: array
+          description: Product metadata (filtered by ReturnedFields configuration)
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              value:
+                type: string
+            required:
+              - key
+              - value
+
+    # Product creation/update request
+    ProductRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        url:
+          type: string
+          nullable: true
+          format: uri
+        metadata:
+          $ref: './common.yaml#/components/schemas/Metadata'
+      required:
+        - name
+
+    # Product response with full data
+    ProductResponse:
+      allOf:
+        - $ref: './common.yaml#/components/schemas/SuccessResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ProductData'
+
+    # Release status enumeration
+    ReleaseStatus:
+      type: string
+      enum:
+        - PUBLISHED
+        - DRAFT
+        - ARCHIVED
+        - DEPRECATED
+      description: Status of a product release
+
+    # Release data structure
+    ReleaseData:
+      type: object
+      properties:
+        id:
+          $ref: './common.yaml#/components/schemas/UUID'
+        version:
+          $ref: './common.yaml#/components/schemas/Version'
+        status:
+          $ref: '#/components/schemas/ReleaseStatus'
+        latest:
+          type: boolean
+          description: Whether this is the latest release for the product/branch
+        productId:
+          $ref: './common.yaml#/components/schemas/UUID'
+        branchId:
+          $ref: './common.yaml#/components/schemas/UUID'
+          nullable: true
+          description: Branch this release belongs to
+        teamId:
+          $ref: './common.yaml#/components/schemas/UUID'
+          description: Team that owns this release
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - version
+        - status
+        - latest
+        - productId
+        - teamId
+        - createdAt
+        - updatedAt
+
+    # Release file data structure
+    ReleaseFileData:
+      type: object
+      nullable: true
+      properties:
+        id:
+          $ref: './common.yaml#/components/schemas/UUID'
+        key:
+          type: string
+          description: S3 storage key
+        size:
+          type: integer
+          description: File size in bytes
+        name:
+          type: string
+          description: Original file name
+        checksum:
+          type: string
+          description: MD5 checksum of the file
+        mainClassName:
+          type: string
+          nullable: true
+          description: Main class name (for JAR files)
+      required:
+        - id
+        - key
+        - size
+        - name
+        - checksum
+
+    # Create release request (JSON fields within multipart data)
+    CreateReleaseRequest:
+      type: object
+      required:
+        - version
+        - productId
+        - status
+      properties:
+        version:
+          $ref: './common.yaml#/components/schemas/Version'
+          description: 'Release version string (3-255 chars, no spaces)'
+        productId:
+          $ref: './common.yaml#/components/schemas/UUID'
+          description: 'UUID of the product this release belongs to'
+        status:
+          $ref: '#/components/schemas/ReleaseStatus'
+          description: 'Release status'
+        setAsLatest:
+          type: boolean
+          default: false
+          description: 'Set this as the latest release for the product/branch'
+        branchId:
+          $ref: './common.yaml#/components/schemas/UUID'
+          nullable: true
+          description: 'UUID of the branch (null for default branch)'
+        metadata:
+          $ref: './common.yaml#/components/schemas/Metadata'
+          description: 'Key-value metadata pairs (max 20)'
+        licenseIds:
+          type: array
+          items:
+            $ref: './common.yaml#/components/schemas/UUID'
+          maxItems: 30
+          description: 'License UUIDs to restrict access to this release'
+
+    # Update release request (JSON fields within multipart data)
+    UpdateReleaseRequest:
+      type: object
+      required:
+        - version
+        - productId
+        - status
+        - setAsLatest
+        - keepExistingFile
+        - branchId
+        - metadata
+        - licenseIds
+      properties:
+        version:
+          $ref: './common.yaml#/components/schemas/Version'
+          description: 'Release version string (3-255 chars, no spaces)'
+        productId:
+          $ref: './common.yaml#/components/schemas/UUID'
+          description: 'UUID of the product this release belongs to'
+        status:
+          $ref: '#/components/schemas/ReleaseStatus'
+          description: 'Release status'
+        setAsLatest:
+          type: boolean
+          description: 'Set this as the latest release for the product/branch'
+        keepExistingFile:
+          type: boolean
+          description: 'When no new file is uploaded: true keeps the existing file, false deletes it. Ignored when a new file is uploaded.'
+        branchId:
+          $ref: './common.yaml#/components/schemas/UUID'
+          nullable: true
+          description: 'UUID of the branch (null for default branch)'
+        metadata:
+          $ref: './common.yaml#/components/schemas/Metadata'
+          description: 'Key-value metadata pairs (max 20). Replaces all existing metadata.'
+        licenseIds:
+          type: array
+          items:
+            $ref: './common.yaml#/components/schemas/UUID'
+          maxItems: 30
+          description: 'License UUIDs to restrict access to this release. Replaces all existing associations.'
+
+    # Release list response (paginated)
+    ReleaseListResponse:
+      allOf:
+        - $ref: './common.yaml#/components/schemas/SuccessResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                releases:
+                  type: array
+                  items:
+                    allOf:
+                      - $ref: '#/components/schemas/ReleaseData'
+                      - type: object
+                        properties:
+                          metadata:
+                            $ref: './common.yaml#/components/schemas/Metadata'
+                          product:
+                            $ref: '#/components/schemas/ProductData'
+                          branch:
+                            type: object
+                            nullable: true
+                            properties:
+                              id:
+                                $ref: './common.yaml#/components/schemas/UUID'
+                              name:
+                                type: string
+                          file:
+                            $ref: '#/components/schemas/ReleaseFileData'
+                          allowedLicenses:
+                            type: array
+                            items:
+                              $ref: './license.yaml#/components/schemas/LicenseData'
+                hasNextPage:
+                  type: boolean
+                  description: Whether more pages are available
+                totalResults:
+                  type: integer
+                  description: Total number of matching releases
+              required:
+                - releases
+                - hasNextPage
+                - totalResults
+
+    # Release response with extended data
+    ReleaseResponse:
+      allOf:
+        - $ref: './common.yaml#/components/schemas/SuccessResponse'
+        - type: object
+          properties:
+            data:
+              allOf:
+                - $ref: '#/components/schemas/ReleaseData'
+                - type: object
+                  properties:
+                    metadata:
+                      $ref: './common.yaml#/components/schemas/Metadata'
+                    product:
+                      $ref: '#/components/schemas/ProductData'
+                    branch:
+                      type: object
+                      nullable: true
+                      properties:
+                        id:
+                          $ref: './common.yaml#/components/schemas/UUID'
+                        name:
+                          type: string
+                    file:
+                      $ref: '#/components/schemas/ReleaseFileData'
