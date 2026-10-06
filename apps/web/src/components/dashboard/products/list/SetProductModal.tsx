@@ -26,13 +26,27 @@ import {
   ResponsiveDialogHeader,
   ResponsiveDialogTitle,
 } from '@/components/ui/responsive-dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
+import { Switch } from '@/components/ui/switch';
 import {
   SetProductSchema,
   setProductSchema,
 } from '@/lib/validation/products/set-product-schema';
 import { ProductModalContext } from '@/providers/ProductModalProvider';
 import { zodResolver } from '@hookform/resolvers/zod';
+import {
+  ProductTargetType,
+  ProtectionMode,
+  ReleaseChannelPolicy,
+  UpdatePolicyMode,
+} from '@lukittu/shared';
 import { ChevronDown } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useContext, useEffect, useState } from 'react';
@@ -54,6 +68,10 @@ export default function SetProductModal() {
       url: '',
       metadata: [],
       discordRoleMapping: [],
+      protectionMode: ProtectionMode.NONE,
+      targetType: ProductTargetType.PLUGIN,
+      updatePolicyMode: UpdatePolicyMode.MANUAL,
+      releaseChannelPolicy: ReleaseChannelPolicy.ALL_CHANNELS,
     },
   });
 
@@ -84,6 +102,11 @@ export default function SetProductModal() {
       }));
 
       setValue('discordRoleMapping', discordMappings);
+
+      setValue('protectionMode', ctx.productToEdit.protectionMode);
+      setValue('targetType', ctx.productToEdit.targetType);
+      setValue('updatePolicyMode', ctx.productToEdit.updatePolicyMode);
+      setValue('releaseChannelPolicy', ctx.productToEdit.releaseChannelPolicy);
 
       // Expand Discord section if there are existing mappings
       setDiscordMappingOpen(discordMappings.length > 0);
@@ -213,6 +236,64 @@ export default function SetProductModal() {
                 )}
               />
               <MetadataFields form={form} />
+
+              <Separator />
+
+              <FormField
+                control={control}
+                name="targetType"
+                render={({ field }) => (
+                  <FormItem className="flex flex-row items-center justify-between rounded-lg border border-input p-3 shadow-sm">
+                    <div className="space-y-0.5">
+                      <FormLabel>{t('general.server_core')}</FormLabel>
+                      <p className="text-sm text-muted-foreground">
+                        {t('general.server_core_description')}
+                      </p>
+                    </div>
+                    <FormControl>
+                      <Switch
+                        checked={field.value === ProductTargetType.SERVER_CORE}
+                        onCheckedChange={(checked) =>
+                          field.onChange(
+                            checked
+                              ? ProductTargetType.SERVER_CORE
+                              : ProductTargetType.PLUGIN,
+                          )
+                        }
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={control}
+                name="protectionMode"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('general.protection_mode')}</FormLabel>
+                    <Select onValueChange={field.onChange} value={field.value}>
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value={ProtectionMode.NONE}>
+                          {t('general.protection_mode_none')}
+                        </SelectItem>
+                        <SelectItem value={ProtectionMode.LOADER}>
+                          {t('general.protection_mode_loader')}
+                        </SelectItem>
+                        <SelectItem value={ProtectionMode.INTEGRATED}>
+                          {t('general.protection_mode_integrated')}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
 
               <Separator />
 

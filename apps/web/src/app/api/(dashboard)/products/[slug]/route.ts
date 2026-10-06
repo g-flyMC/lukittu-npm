@@ -367,7 +367,16 @@ export async function PUT(
       );
     }
 
-    const { name, url, metadata, discordRoleMapping } = validated.data;
+    const {
+      name,
+      url,
+      metadata,
+      discordRoleMapping,
+      protectionMode,
+      targetType,
+      updatePolicyMode,
+      releaseChannelPolicy,
+    } = validated.data;
 
     const selectedTeam = await getSelectedTeam();
 
@@ -504,6 +513,10 @@ export async function PUT(
         data: {
           name,
           url: url || null,
+          protectionMode,
+          targetType,
+          updatePolicyMode,
+          releaseChannelPolicy,
           metadata: {
             deleteMany: {},
             createMany: {

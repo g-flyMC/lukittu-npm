@@ -1,5 +1,11 @@
 import { I18nTranslator } from '@/types/i18n-types';
-import { regex } from '@lukittu/shared';
+import {
+  ProductTargetType,
+  ProtectionMode,
+  regex,
+  ReleaseChannelPolicy,
+  UpdatePolicyMode,
+} from '@lukittu/shared';
 import { z } from 'zod';
 import { metadataSchema } from '../shared/metadata-schema';
 
@@ -64,5 +70,21 @@ export const setProductSchema = (t: I18nTranslator) =>
           });
         }),
       metadata: metadataSchema(t),
+      protectionMode: z
+        .nativeEnum(ProtectionMode)
+        .optional()
+        .default(ProtectionMode.NONE),
+      targetType: z
+        .nativeEnum(ProductTargetType)
+        .optional()
+        .default(ProductTargetType.PLUGIN),
+      updatePolicyMode: z
+        .nativeEnum(UpdatePolicyMode)
+        .optional()
+        .default(UpdatePolicyMode.MANUAL),
+      releaseChannelPolicy: z
+        .nativeEnum(ReleaseChannelPolicy)
+        .optional()
+        .default(ReleaseChannelPolicy.ALL_CHANNELS),
     })
     .strict();

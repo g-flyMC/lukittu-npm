@@ -281,7 +281,16 @@ export async function POST(
       );
     }
 
-    const { name, url, metadata, discordRoleMapping } = validated.data;
+    const {
+      name,
+      url,
+      metadata,
+      discordRoleMapping,
+      protectionMode,
+      targetType,
+      updatePolicyMode,
+      releaseChannelPolicy,
+    } = validated.data;
 
     const selectedTeam = await getSelectedTeam();
 
@@ -422,6 +431,10 @@ export async function POST(
         data: {
           name,
           url: url || null,
+          protectionMode,
+          targetType,
+          updatePolicyMode,
+          releaseChannelPolicy,
           metadata: {
             createMany: {
               data: metadata.map((m) => ({
