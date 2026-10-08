@@ -14,7 +14,8 @@
     "@sentry/cli": "^3.6.2",
     "@sentry/node": "^10.70.0",
     "@sentry/profiling-node": "^10.70.0",
-    "discord.js": "^14.27.0"
+    "discord.js": "^14.27.0",
+    "@aws-sdk/client-s3": "^3.1108.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",

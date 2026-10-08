@@ -16,6 +16,7 @@ import {
   startScheduledRoleSync,
   syncUserById,
 } from './services/discord-role-service';
+import { startLukittuBuildWorker } from './services/lukittu-build-worker';
 import { Command, LinkedDiscordAccount } from './structures/command';
 
 const client = new Client({
@@ -471,6 +472,10 @@ client.once(Events.ClientReady, () => {
 
 // Load events, commands and login
 (async () => {
+  // Independant de Discord : ne doit pas attendre/dependre de la connexion
+  // au bot pour tourner (sinon un Discord down bloque les builds).
+  startLukittuBuildWorker();
+
   try {
     await loadEvents();
     await loadCommands();
